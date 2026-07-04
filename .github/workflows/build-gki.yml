@@ -115,8 +115,13 @@ jobs:
             git clone https://github.com/tiann/KernelSU.git KernelSU
           fi
           
-          cd KernelSU
-          git checkout ${{ inputs.ksu_version }}
+          ./KernelSU/kernel/setup.sh ${{ inputs.ksu_version }}
+          
+          # Replace symlinks with physical copy for Bazel Sandbox
+          rm -rf common/drivers/kernelsu
+          cp -r KernelSU/kernel common/drivers/kernelsu
+          # rm -f common/drivers/kernelsu/include/uapi
+          # cp -r KernelSU/uapi common/drivers/kernelsu/include/uapi
           
           # Dynamic version calculation
           KSU_GIT_VERSION=$(git rev-list --count HEAD)
@@ -129,17 +134,7 @@ jobs:
           KSU_VERSION=$((BASE_OFFSET + KSU_GIT_VERSION))
           echo "Calculated KSU_VERSION: $KSU_VERSION"
           echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
-          
-          # Run setup script
-          ./kernel/setup.sh
-          cd ..
-          
-          # Replace symlinks with physical copy for Bazel Sandbox
-          rm -rf common/drivers/kernelsu
-          cp -r KernelSU/kernel common/drivers/kernelsu
-          rm -f common/drivers/kernelsu/include/uapi
-          cp -r KernelSU/uapi common/drivers/kernelsu/include/uapi
-          
+
           # Hardcode calculated KSU_VERSION to bypass fallback 16
           for f in common/drivers/kernelsu/Makefile common/drivers/kernelsu/Kbuild; do
             if [ -f "$f" ]; then
