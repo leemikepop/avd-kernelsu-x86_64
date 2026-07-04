@@ -4,25 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       build_id_preset:
-        description: 'Choose AVD Build ID Preset (or select custom to manually input below)'
+        description: 'Choose AVD Build ID Preset (or select "Custom Build ID" to manually input below)'
         required: true
         type: choice
         options:
           - '9964412 (Android 14 6.1)'
           - '11987101 (Android 15 6.6)'
           - '10871489 (Android 13 5.15)'
-          - 'custom (手動輸入於下方)'
+          - 'custom (Custom Build ID)'
         default: '9964412 (Android 14 6.1)'
       custom_build_id:
-        description: 'Custom Build ID (Only used if "custom" is selected above)'
+        description: 'Custom Build ID (Only used if "Custom Build ID" is selected above)'
         required: false
         type: string
         default: ''
       ksu_version:
-        description: 'KernelSU / KernelSU-Next Version Tag or Commit (e.g. v0.9.5, v3.0.0)'
+        description: 'KernelSU / KernelSU-Next Version Tag or Commit (e.g. v3.0.0)'
         required: true
         type: string
-        default: 'v0.9.5'
+        default: 'v3.0.0'
       ksu_variant:
         description: 'KernelSU Variant'
         required: true
@@ -43,7 +43,7 @@ on:
 jobs:
   build:
     name: "Build GKI ${{ inputs.arch }} - BuildID: ${{ github.event.inputs.build_id_preset }}"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
 
     steps:
@@ -104,6 +104,57 @@ jobs:
           # Sync
           repo sync -c -j$(nproc --all)
 
+      - name: Detect Kernel Metadata
+        id: metadata
+        run: |
+          if [ -f "kernel/common/Makefile" ]; then
+            VERSION=$(grep '^VERSION = ' kernel/common/Makefile | awk '{print $3}')
+            PATCHLEVEL=$(grep '^PATCHLEVEL = ' kernel/common/Makefile | awk '{print $3}')
+            SUBLEVEL=$(grep '^SUBLEVEL = ' kernel/common/Makefile | awk '{print $3}')
+            KERNEL_VERSION="$VERSION.$PATCHLEVEL"
+            echo "Detected KERNEL_VERSION: $KERNEL_VERSION"
+            echo "Detected SUBLEVEL: $SUBLEVEL"
+            echo "kernel_version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+            echo "sublevel=$SUBLEVEL" >> $GITHUB_OUTPUT
+            
+            # Estimate Android version based on kernel version
+            if [ "$KERNEL_VERSION" = "6.6" ]; then
+              echo "android_version=android15" >> $GITHUB_OUTPUT
+            elif [ "$KERNEL_VERSION" = "6.1" ]; then
+              echo "android_version=android14" >> $GITHUB_OUTPUT
+            elif [ "$KERNEL_VERSION" = "5.15" ]; then
+              echo "android_version=android13" >> $GITHUB_OUTPUT
+            else
+              echo "android_version=unknown" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Error: Makefile not found!"
+            exit 1
+          fi
+
+      - name: Apply glibc 2.38 Compatibility Fix
+        run: |
+          SUBLEVEL="${{ steps.metadata.outputs.sublevel }}"
+          KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
+          ANDROID_VERSION="${{ steps.metadata.outputs.android_version }}"
+          
+          if [[ "$ANDROID_VERSION" == "android14" && "$KERNEL_VERSION" == "6.1" && $SUBLEVEL -le 43 ]]; then
+            GLIBC_VERSION=$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')
+            if [ "$(printf '%s\n' "2.38" "$GLIBC_VERSION" | sort -V | head -n1)" = "2.38" ]; then
+              echo "Applying glibc 2.38 compatibility fix for sublevel $SUBLEVEL..."
+              cd "kernel/common"
+              sed -i '/\$(Q)\$(MAKE) -C \$(SUBCMD_SRC) OUTPUT=\$(abspath \$(dir \$@))\/ \$(abspath \$@)/s//$(Q)$(MAKE) -C $(SUBCMD_SRC) EXTRA_CFLAGS="$(CFLAGS)" OUTPUT=$(abspath $(dir $@))\/ $(abspath $@)/' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
+            fi
+          fi
+
+      - name: Fix Less Than 6.6.50 Builds
+        if: ${{ steps.metadata.outputs.android_version == 'android15' && steps.metadata.outputs.kernel_version == '6.6' }}
+        run: |
+          cd kernel/common
+          if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
+            sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c
+          fi
+
       - name: Integrate KernelSU
         run: |
           cd kernel
@@ -124,6 +175,7 @@ jobs:
           # cp -r KernelSU/uapi common/drivers/kernelsu/include/uapi
           
           # Dynamic version calculation
+          cd KernelSU
           KSU_GIT_VERSION=$(git rev-list --count HEAD)
           BASE_OFFSET=10000
           if grep -q "30000" kernel/Makefile 2>/dev/null; then
@@ -134,6 +186,7 @@ jobs:
           KSU_VERSION=$((BASE_OFFSET + KSU_GIT_VERSION))
           echo "Calculated KSU_VERSION: $KSU_VERSION"
           echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+          cd ..
 
           # Hardcode calculated KSU_VERSION to bypass fallback 16
           for f in common/drivers/kernelsu/Makefile common/drivers/kernelsu/Kbuild; do
