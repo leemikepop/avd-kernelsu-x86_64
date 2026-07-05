@@ -23,8 +23,9 @@ The following are the pre-configured AVD builds and their respective kernel vers
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Android 13** | API 33 | `common-android13-5.15` | A13-GAPPS, A13-GAPIS, A13-AOSP | `10871489` | |
 | **Android 14** | API 34 | `common-android14-6.1` | A14-GAPPS, A14-GAPIS, A14-AOSP | `9964412` | |
-| **Android 15** | API 35 | `common-android15-6.6` | A15-GAPPS, A15-GAPIS, A15-AOSP (No 16KB Page) | `11987101` | Should use KernelSU `v3.2.0` or upper. syscall hardening cannot bypass. |
-| **Android 16** | API 36.0 | `common-android16-6.12` | A16-GAPPS, A16-GAPIS, A16-AOSP (No 16KB Page) | `13070261` | Should use KernelSU `v3.2.0` or upper. syscall hardening cannot bypass. |
+| **Android 15** | API 35 | `common-android15-6.6` | A15-GAPPS, A15-GAPIS, A15-AOSP (No 16KB Page) | `11987101` | Use KernelSU `v3.2.0` or newer with the x86_64 indirect-safe patches. |
+| **Android 16** | API 36.0 | `common-android15-6.6-2025-02` | A16-GAPPS, A16-GAPIS, A16-AOSP (No 16KB Page) | `13070261` | API 36.0 AVD still uses android15-6.6-2025-02 GKI. Use KernelSU `v3.2.0` or newer with the x86_64 indirect-safe patches. |
+| **Android 16** | API 36.1 | `common-android16-6.12` | A16-GAPPS, A16-GAPIS, A16-AOSP (No 16KB Page) | `13996879` | API 36.1 moves to 6.12 GKI. Use KernelSU `v3.2.0` or newer with the x86_64 indirect-safe patches. |
 
 - KernelSU `v3.2.0` [Bring back x86_64 support with a catch by @hmtheboy154 in \#3328](https://github.com/tiann/KernelSU/pull/3328)
 - See <https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/diff/arch/x86/entry/common.c?id=1e3ad78334a69b36e107232e337f9d693dcc9df2>
@@ -37,11 +38,13 @@ When running the GitHub Action, you will configure:
 
 | Input | Description |
 | :--- | :--- |
-| **Build ID Preset** | Select from pre-configured AVD builds (e.g. `9964412` for A14 6.1, `11987101` for A15 6.6) or choose `custom` to specify your own. |
+| **Build ID Preset** | Select from pre-configured AVD builds (e.g. `9964412` for A14 API 34 6.1, `11987101` for A15 API 35 6.6) or choose `custom` to specify your own. |
 | **Custom Build ID** | Required only if "custom" is selected in the preset. Enter the Build ID from [ci.android.com](https://ci.android.com/). |
 | **KSU Version Tag** | The tag/commit in the KernelSU repo (e.g., `v3.0.0`). |
 | **KSU Variant** | Choose between official `KernelSU` or `KernelSU-Next` (TODO). |
 | **Target Architecture** | `x86_64` (for standard Windows/Linux Intel/AMD hosts) or `arm64` (for Apple Silicon or ARM64 hosts). |
+
+Artifacts include both Android/API and kernel information in their name, e.g. `dist-13070261_v320_A16-API36.0-6.6`. This keeps Android 16 API 36.0 (`6.6`) distinct from Android 16 API 36.1 (`6.12`).
 
 ---
 
@@ -56,18 +59,15 @@ KernelSU's x86_64 implementation (introduced in v3.2.0 via PR [#3328](https://gi
 
 ### How the Workflow Handles this Automatically
 
-The workflow dynamically detects the KernelSU version being compiled (using version tags and commit ancestry):
+The workflow detects the synced kernel version and applies the matching x86_64 indirect-safe patch set for hardened kernels. For older kernels that still use the traditional syscall table path, no hardening patch is needed.
 
-#### For Older KernelSU Versions (Tag < v3.2.0 or commit before [40e8fb7](https://github.com/tiann/KernelSU/commit/40e8fb7616bfd875babb45364f5262657538327a))
+For KernelSU v3.2.0 or newer, the workflow keeps KernelSU's `X86_FEATURE_INDIRECT_SAFE` checks enabled and patches the GKI kernel instead of deleting the safety checks from KernelSU. When a syscall hardening patch is applied, the generated `build-info.txt` records that the emulator must be launched with:
 
-If the GKI kernel also doesn't have syscall hardening (e.g. Android 13/14 builds), KernelSU's checks are **automatically bypassed** by patching `drivers/kernelsu/core/init.c` using `sed` to remove the compile-time `#error` and runtime abort block. The kernel still uses traditional `sys_call_table` lookup, so KernelSU works 100% normally.
+```powershell
+-append "syscall_hardening=off"
+```
 
-#### For Newer KernelSU Versions (Tag >= v3.2.0 or latest KernelSU)
-
-The workflow **skips the bypass patch** to keep security checks intact. If you compile for newer AVD images (Android 15/16) that use hardened kernels, you **must**:
-
-1. Manually patch your GKI kernel source code to add the `X86_FEATURE_INDIRECT_SAFE` patches.
-2. Launch the emulator with the boot argument `-append "syscall_hardening=off"` to allow indirect syscall routing, otherwise the emulator will bootloop.
+For manual builds and exact patch commands, see [the manual guide](../docs/avd-kernelsu-x86_64-manual.md).
 
 ---
 
