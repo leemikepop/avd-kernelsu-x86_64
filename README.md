@@ -38,13 +38,13 @@ When running the GitHub Action, you will configure:
 
 | Input | Description |
 | :--- | :--- |
-| **Build ID Preset** | Select from pre-configured AVD builds (e.g. `9964412` for A14 API 34 6.1, `11987101` for A15 API 35 6.6) or choose `custom` to specify your own. |
-| **Custom Build ID** | Required only if "custom" is selected in the preset. Enter the Build ID from [ci.android.com](https://ci.android.com/). |
-| **KSU Version Tag** | The tag/commit in the KernelSU repo (e.g., `v3.0.0`). |
+| **AVD Target** | Select `all` to build every preset in `.github/avd-targets.json`, or select one target such as `a14-api34-6.1`. |
+| **KSU Version Tag** | The tag/commit in the KernelSU repo (e.g., `v3.2.0`). |
 | **KSU Variant** | Choose between official `KernelSU` or `KernelSU-Next` (TODO). |
-| **Target Architecture** | `x86_64` (for standard Windows/Linux Intel/AMD hosts) or `arm64` (for Apple Silicon or ARM64 hosts). |
+| **Target Architecture** | `x86_64` (for standard Windows/Linux Intel/AMD hosts), `arm64` (for Apple Silicon or ARM64 hosts), or `both`. |
+| **Release Type** | `Actions` uploads workflow artifacts only. `Pre-Release` and `Release` collect all matrix artifacts into a GitHub Release. |
 
-Artifacts include both Android/API and kernel information in their name, e.g. `dist-13070261_v320_A16-API36.0-6.6`. This keeps Android 16 API 36.0 (`6.6`) distinct from Android 16 API 36.1 (`6.12`).
+Artifacts include Build ID, Android/API, kernel version, architecture, and KernelSU version in their name, e.g. `dist-13070261_A16-API36.0-6.6-x86_64_v320`. This keeps Android 16 API 36.0 (`6.6`) distinct from Android 16 API 36.1 (`6.12`), and avoids collisions when building both architectures.
 
 ---
 
@@ -61,7 +61,12 @@ KernelSU's x86_64 implementation (introduced in v3.2.0 via PR [#3328](https://gi
 
 The workflow detects the synced kernel version and applies the matching x86_64 indirect-safe patch set for hardened kernels. For older kernels that still use the traditional syscall table path, no hardening patch is needed.
 
-For KernelSU v3.2.0 or newer, the workflow keeps KernelSU's `X86_FEATURE_INDIRECT_SAFE` checks enabled and patches the GKI kernel instead of deleting the safety checks from KernelSU. When a syscall hardening patch is applied, the generated `build-info.txt` records that the emulator must be launched with:
+For KernelSU v3.2.0 or newer:
+
+- Android 13/14 GKI (`5.15` / `6.1`) still uses the syscall table path, so the workflow removes KernelSU's `X86_FEATURE_INDIRECT_SAFE` checks.
+- Android 15+ GKI (`6.6` / `6.12`) uses switch-case syscall hardening, so the workflow keeps KernelSU's checks and patches the GKI kernel.
+
+When a syscall hardening patch is applied, the generated `build-info.txt` records that the emulator must be launched with:
 
 ```powershell
 -append "syscall_hardening=off"
@@ -73,7 +78,7 @@ For manual builds and exact patch commands, see [the manual guide](../docs/avd-k
 
 ## How to Deploy Your Custom Kernel
 
-1. Run the **Build AVD GKI Kernel** workflow in your forked repo actions tab.
+1. Run the **Build AVD GKI Kernels with KernelSU** workflow in your forked repo actions tab.
 2. Download the compiled zip artifact containing the kernel image (e.g., `bzImage` for x86_64, `Image` or `Image.gz` for arm64) and `build-info.txt`.
 3. Sideload the matching **KernelSU Manager APK** (ensure the version tag matches the KSU version code reported in `build-info.txt`).
 4. Boot your emulator from the command line pointing to the custom kernel:

@@ -1,30 +1,29 @@
-name: Build AVD GKI Kernel
+name: Build AVD GKI Kernels with KernelSU
+
+permissions:
+  contents: write
+  actions: read
 
 on:
   workflow_dispatch:
     inputs:
-      build_id_preset:
-        description: 'Choose AVD Build ID Preset (or select "Custom Build ID" to manually input below)'
+      avd_target:
+        description: 'AVD target to build'
         required: true
         type: choice
         options:
-          - '10871489 (Android 13 API 33 5.15)'
-          - '9964412 (Android 14 API 34 6.1)'
-          - '11987101 (Android 15 API 35 6.6)'
-          - '13070261 (Android 16 API 36.0 6.6)'
-          - '13996879 (Android 16 API 36.1 6.12)'
-          - 'custom (Custom Build ID)'
-        default: '9964412 (Android 14 API 34 6.1)'
-      custom_build_id:
-        description: 'Custom Build ID (Only used if "Custom Build ID" is selected above)'
-        required: false
-        type: string
-        default: ''
+          - 'all'
+          - 'a13-api33-5.15'
+          - 'a14-api34-6.1'
+          - 'a15-api35-6.6'
+          - 'a16-api36.0-6.6'
+          - 'a16-api36.1-6.12'
+        default: 'all'
       ksu_version:
-        description: 'KernelSU / KernelSU-Next Version Tag or Commit (e.g. v3.0.0)'
+        description: 'KernelSU / KernelSU-Next Version Tag or Commit (e.g. v3.2.0)'
         required: true
         type: string
-        default: 'v3.0.0'
+        default: 'v3.2.0'
       ksu_variant:
         description: 'KernelSU Variant'
         required: true
@@ -34,19 +33,104 @@ on:
           - 'KernelSU-Next'
         default: 'KernelSU'
       arch:
-        description: 'Target Architecture'
+        description: 'Target architecture'
         required: true
         type: choice
         options:
           - 'x86_64'
           - 'arm64'
+          - 'both'
         default: 'x86_64'
+      release_type:
+        description: 'Where to publish outputs'
+        required: true
+        type: choice
+        options:
+          - 'Actions'
+          - 'Pre-Release'
+          - 'Release'
+        default: 'Actions'
 
 jobs:
+  prepare-matrix:
+    name: Prepare Build Matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      target_count: ${{ steps.matrix.outputs.target_count }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Generate Matrix
+        id: matrix
+        env:
+          SELECTED_TARGET: ${{ inputs.avd_target }}
+          SELECTED_ARCH: ${{ inputs.arch }}
+        run: |
+          MATRIX_JSON=$(python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          selected_target = os.environ["SELECTED_TARGET"]
+          selected_arch = os.environ["SELECTED_ARCH"]
+
+          with open(".github/avd-targets.json", "r", encoding="utf-8") as f:
+              targets = json.load(f)["include"]
+
+          if selected_target != "all":
+              targets = [target for target in targets if target["id"] == selected_target]
+
+          if not targets:
+              print(f"No AVD target matched {selected_target}", file=sys.stderr)
+              sys.exit(1)
+
+          if selected_arch == "both":
+              arches = ["x86_64", "arm64"]
+          else:
+              arches = [selected_arch]
+
+          include = []
+          for target in targets:
+              for arch in arches:
+                  item = dict(target)
+                  item["arch"] = arch
+                  include.append(item)
+
+          print(json.dumps({"include": include}, separators=(",", ":")))
+          PY
+          )
+          TARGET_COUNT=$(MATRIX_JSON="$MATRIX_JSON" python3 - <<'PY'
+          import json
+          import os
+          print(len(json.loads(os.environ["MATRIX_JSON"])["include"]))
+          PY
+          )
+
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          echo "target_count=$TARGET_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Prepared $TARGET_COUNT build target(s)."
+          echo "$MATRIX_JSON"
+
   build:
-    name: "Build GKI ${{ inputs.arch }} - BuildID: ${{ github.event.inputs.build_id_preset }}"
+    name: "Build ${{ matrix.id }} ${{ matrix.arch }}"
+    needs: prepare-matrix
     runs-on: ubuntu-22.04
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    env:
+      BUILD_ID: ${{ matrix.build_id }}
+      TARGET_ID: ${{ matrix.id }}
+      TARGET_NAME: ${{ matrix.name }}
+      EXPECTED_KERNEL_VERSION: ${{ matrix.kernel_version }}
+      TARGET_ANDROID_VERSION: ${{ matrix.android_version }}
+      TARGET_ANDROID_LABEL: ${{ matrix.android_label }}
+      TARGET_API_LEVEL: ${{ matrix.api_level }}
+      TARGET_ARCH: ${{ matrix.arch }}
 
     steps:
       - name: Checkout Repository
@@ -70,107 +154,55 @@ jobs:
           echo "KSU_X86_SYSCALL_HARDENING_PATCHED=false" >> "$GITHUB_ENV"
           echo "KSU_X86_SYSCALL_CHECK_BYPASSED=false" >> "$GITHUB_ENV"
 
-      - name: Resolve Build ID
-        run: |
-          PRESET_ID="${{ inputs.build_id_preset }}"
-          CUSTOM_ID="${{ inputs.custom_build_id }}"
-          
-          if [ "$PRESET_ID" = "custom (Custom Build ID)" ]; then
-            if [ -z "$CUSTOM_ID" ]; then
-              echo "Error: You selected 'custom' but did not provide a custom_build_id!"
-              exit 1
-            fi
-            BUILD_ID="$CUSTOM_ID"
-          else
-            BUILD_ID=$(echo "$PRESET_ID" | awk '{print $1}')
-          fi
-          
-          echo "Resolved BUILD_ID: $BUILD_ID"
-          echo "BUILD_ID=$BUILD_ID" >> $GITHUB_ENV
-
       - name: Sync Kernel Source
         run: |
           mkdir -p kernel
           cd kernel
-          
-          ARCH="${{ inputs.arch }}"
-          if [ "$ARCH" = "x86_64" ]; then
-            TARGET_ARCH="kernel_virt_x86_64"
+
+          if [ "$TARGET_ARCH" = "x86_64" ]; then
+            CI_TARGET_ARCH="kernel_virt_x86_64"
           else
-            TARGET_ARCH="kernel_aarch64"
+            CI_TARGET_ARCH="kernel_aarch64"
           fi
-          
-          # Initialize Repo with the manifest for the exact Build ID
+
           repo init -u https://android.googlesource.com/kernel/manifest --depth=1
-          curl -Lo .repo/manifests/manifest_${{ env.BUILD_ID }}.xml "https://ci.android.com/builds/submitted/${{ env.BUILD_ID }}/${TARGET_ARCH}/latest/raw/manifest_${{ env.BUILD_ID }}.xml"
-          repo init -m manifest_${{ env.BUILD_ID }}.xml
-          
-          # Sync
-          repo sync -c -j$(nproc --all)
+          curl -Lo ".repo/manifests/manifest_${BUILD_ID}.xml" "https://ci.android.com/builds/submitted/${BUILD_ID}/${CI_TARGET_ARCH}/latest/raw/manifest_${BUILD_ID}.xml"
+          repo init -m "manifest_${BUILD_ID}.xml"
+          repo sync -c -j"$(nproc --all)"
 
       - name: Detect Kernel Metadata
         id: metadata
         run: |
-          if [ -f "kernel/common/Makefile" ]; then
-            VERSION=$(grep '^VERSION = ' kernel/common/Makefile | awk '{print $3}')
-            PATCHLEVEL=$(grep '^PATCHLEVEL = ' kernel/common/Makefile | awk '{print $3}')
-            SUBLEVEL=$(grep '^SUBLEVEL = ' kernel/common/Makefile | awk '{print $3}')
-            KERNEL_VERSION="$VERSION.$PATCHLEVEL"
-            echo "Detected KERNEL_VERSION: $KERNEL_VERSION"
-            echo "Detected SUBLEVEL: $SUBLEVEL"
-            echo "kernel_version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
-            echo "sublevel=$SUBLEVEL" >> $GITHUB_OUTPUT
-            
-            # AVD API version and GKI kernel version do not always move together.
-            # For example, Android 16 API 36.0 AVD still uses android15-6.6 GKI.
-            case "${{ env.BUILD_ID }}" in
-              10871489)
-                echo "android_version=android13" >> $GITHUB_OUTPUT
-                echo "api_level=33" >> $GITHUB_OUTPUT
-                ;;
-              9964412)
-                echo "android_version=android14" >> $GITHUB_OUTPUT
-                echo "api_level=34" >> $GITHUB_OUTPUT
-                ;;
-              11987101)
-                echo "android_version=android15" >> $GITHUB_OUTPUT
-                echo "api_level=35" >> $GITHUB_OUTPUT
-                ;;
-              13070261)
-                echo "android_version=android16" >> $GITHUB_OUTPUT
-                echo "api_level=36.0" >> $GITHUB_OUTPUT
-                ;;
-              *)
-                if [ "$KERNEL_VERSION" = "6.12" ]; then
-                  echo "android_version=android16" >> $GITHUB_OUTPUT
-                  echo "api_level=36.1" >> $GITHUB_OUTPUT
-                elif [ "$KERNEL_VERSION" = "6.6" ]; then
-                  echo "android_version=android15" >> $GITHUB_OUTPUT
-                  echo "api_level=35" >> $GITHUB_OUTPUT
-                elif [ "$KERNEL_VERSION" = "6.1" ]; then
-                  echo "android_version=android14" >> $GITHUB_OUTPUT
-                  echo "api_level=34" >> $GITHUB_OUTPUT
-                elif [ "$KERNEL_VERSION" = "5.15" ]; then
-                  echo "android_version=android13" >> $GITHUB_OUTPUT
-                  echo "api_level=33" >> $GITHUB_OUTPUT
-                else
-                  echo "android_version=unknown" >> $GITHUB_OUTPUT
-                  echo "api_level=unknown" >> $GITHUB_OUTPUT
-                fi
-                ;;
-            esac
-          else
+          if [ ! -f "kernel/common/Makefile" ]; then
             echo "Error: Makefile not found!"
             exit 1
           fi
+
+          VERSION=$(grep '^VERSION = ' kernel/common/Makefile | awk '{print $3}')
+          PATCHLEVEL=$(grep '^PATCHLEVEL = ' kernel/common/Makefile | awk '{print $3}')
+          SUBLEVEL=$(grep '^SUBLEVEL = ' kernel/common/Makefile | awk '{print $3}')
+          KERNEL_VERSION="$VERSION.$PATCHLEVEL"
+
+          echo "Detected KERNEL_VERSION: $KERNEL_VERSION"
+          echo "Detected SUBLEVEL: $SUBLEVEL"
+          echo "Expected KERNEL_VERSION: $EXPECTED_KERNEL_VERSION"
+
+          if [ "$KERNEL_VERSION" != "$EXPECTED_KERNEL_VERSION" ]; then
+            echo "Error: detected kernel version does not match target metadata."
+            exit 1
+          fi
+
+          echo "kernel_version=$KERNEL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "sublevel=$SUBLEVEL" >> "$GITHUB_OUTPUT"
 
       - name: Resolve Distribution Name
         id: dist
         run: |
           KSU_REF="${{ inputs.ksu_version }}"
           KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
-          ANDROID_VERSION="${{ steps.metadata.outputs.android_version }}"
-          API_LEVEL="${{ steps.metadata.outputs.api_level }}"
+          ANDROID_LABEL="$TARGET_ANDROID_LABEL"
+          API_LEVEL="$TARGET_API_LEVEL"
+          ARCH_LABEL="$TARGET_ARCH"
 
           if [[ "$KSU_REF" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             KSU_VERSION_LABEL="v${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
@@ -178,28 +210,27 @@ jobs:
             KSU_VERSION_LABEL=$(echo "$KSU_REF" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')
           fi
 
-          if [[ "$ANDROID_VERSION" =~ ^android([0-9]+)$ ]]; then
-            ANDROID_LABEL="A${BASH_REMATCH[1]}"
-          else
-            ANDROID_LABEL="Aunknown"
-          fi
-
           API_LABEL="API$(echo "$API_LEVEL" | sed -E 's/[^0-9A-Za-z._-]+/-/g; s/^-+//; s/-+$//')"
-          DIST_NAME="dist-${BUILD_ID}_${KSU_VERSION_LABEL}_${ANDROID_LABEL}-${API_LABEL}-${KERNEL_VERSION}"
+          DIST_NAME="dist-${BUILD_ID}_${ANDROID_LABEL}-${API_LABEL}-${KERNEL_VERSION}-${ARCH_LABEL}_${KSU_VERSION_LABEL}"
+          ARTIFACT_NAME="$DIST_NAME"
+
           echo "Resolved DIST_NAME: $DIST_NAME"
+          echo "Resolved ARTIFACT_NAME: $ARTIFACT_NAME"
           echo "KSU_VERSION_LABEL=$KSU_VERSION_LABEL" >> "$GITHUB_ENV"
           echo "ANDROID_LABEL=$ANDROID_LABEL" >> "$GITHUB_ENV"
           echo "API_LEVEL=$API_LEVEL" >> "$GITHUB_ENV"
           echo "API_LABEL=$API_LABEL" >> "$GITHUB_ENV"
           echo "DIST_NAME=$DIST_NAME" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> "$GITHUB_ENV"
           echo "dist_name=$DIST_NAME" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Apply glibc 2.38 Compatibility Fix
         run: |
           SUBLEVEL="${{ steps.metadata.outputs.sublevel }}"
           KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
-          ANDROID_VERSION="${{ steps.metadata.outputs.android_version }}"
-          
+          ANDROID_VERSION="$TARGET_ANDROID_VERSION"
+
           if [[ "$ANDROID_VERSION" == "android14" && "$KERNEL_VERSION" == "6.1" && $SUBLEVEL -le 43 ]]; then
             GLIBC_VERSION=$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')
             if [ "$(printf '%s\n' "2.38" "$GLIBC_VERSION" | sort -V | head -n1)" = "2.38" ]; then
@@ -214,17 +245,18 @@ jobs:
         run: |
           cd kernel/common
           if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
-            sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c
+            sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace/hooks/fs.h>' ./fs/namespace.c
           fi
 
       - name: Apply x86_64 Syscall Hardening Patches
-        if: ${{ inputs.arch == 'x86_64' }}
+        if: ${{ matrix.arch == 'x86_64' }}
         run: |
           cd kernel/common
 
           KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
           KSU_X86_SYSCALL_HARDENING_PATCHED=false
           PATCH_URLS=()
+          PATCH_MODE=standard
 
           case "$KERNEL_VERSION" in
             5.15|6.1)
@@ -237,6 +269,7 @@ jobs:
               )
               ;;
             6.12)
+              PATCH_MODE=android16_6_12
               PATCH_URLS=(
                 "https://github.com/android-generic/kernel-zenith/commit/dd2c602268fdc81f4d3b662f6a15142ac0ec7bcd.patch"
                 "https://github.com/android-generic/kernel-zenith/commit/7d99237ae5da61c19447138da3282ae37d43857b.patch"
@@ -259,6 +292,44 @@ jobs:
               && grep -q 'syscall_hardening' arch/x86/kernel/cpu/common.c \
               && grep -q 'sys_call_table\[unr\]' arch/x86/entry/common.c; then
               echo "KernelSU x86_64 syscall hardening patches are already present; skipping."
+            elif [ "$PATCH_MODE" = "android16_6_12" ]; then
+              echo "Applying Android 16 6.12-compatible KernelSU x86_64 syscall hardening patches..."
+
+              if ! grep -q 'X86_FEATURE_INDIRECT_SAFE' arch/x86/include/asm/cpufeatures.h; then
+                sed -i '/X86_FEATURE_INDIRECT_THUNK_ITS/a #define X86_FEATURE_INDIRECT_SAFE\t(21*32 + 7) /* "" Indirect branches can be used for syscalls */' arch/x86/include/asm/cpufeatures.h
+              fi
+              if ! grep -q 'X86_FEATURE_INDIRECT_SAFE' arch/x86/include/asm/cpufeatures.h; then
+                echo "Failed to add X86_FEATURE_INDIRECT_SAFE to cpufeatures.h"
+                exit 1
+              fi
+
+              if ! grep -q 'cpu_show_syscall_hardening' include/linux/cpu.h; then
+                sed -i '/extern ssize_t cpu_show_tsa/i #if defined(CONFIG_X86) || defined(CONFIG_X86_64)\nextern ssize_t cpu_show_syscall_hardening(struct device *dev,\n\t\t\t\t\t       struct device_attribute *attr, char *buf);\n#endif\n' include/linux/cpu.h
+              fi
+              if ! grep -q 'cpu_show_syscall_hardening' include/linux/cpu.h; then
+                echo "Failed to add cpu_show_syscall_hardening declaration to include/linux/cpu.h"
+                exit 1
+              fi
+
+              curl -L "${PATCH_URLS[0]}" -o /tmp/ksu-x86-syscall-hardening-1.patch
+              git apply --check --whitespace=fix \
+                --exclude=arch/x86/include/asm/cpufeatures.h \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                /tmp/ksu-x86-syscall-hardening-1.patch
+              git apply --whitespace=fix \
+                --exclude=arch/x86/include/asm/cpufeatures.h \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                /tmp/ksu-x86-syscall-hardening-1.patch
+
+              curl -L "${PATCH_URLS[1]}" -o /tmp/ksu-x86-syscall-hardening-2.patch
+              git apply --check --whitespace=fix \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                --exclude=include/linux/cpu.h \
+                /tmp/ksu-x86-syscall-hardening-2.patch
+              git apply --whitespace=fix \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                --exclude=include/linux/cpu.h \
+                /tmp/ksu-x86-syscall-hardening-2.patch
             else
               for patch_url in "${PATCH_URLS[@]}"; do
                 echo "Applying $patch_url"
@@ -276,28 +347,24 @@ jobs:
       - name: Integrate KernelSU
         run: |
           cd kernel
-          
-          # Clone chosen variant
+
           if [ "${{ inputs.ksu_variant }}" = "KernelSU-Next" ]; then
             git clone https://github.com/rifsxd/KernelSU-Next.git KernelSU
           else
             git clone https://github.com/tiann/KernelSU.git KernelSU
           fi
-          
-          ./KernelSU/kernel/setup.sh ${{ inputs.ksu_version }}
-          
-          # Replace symlinks with physical copy for Bazel Sandbox
+
+          ./KernelSU/kernel/setup.sh "${{ inputs.ksu_version }}"
+
           rm -rf common/drivers/kernelsu
           cp -r KernelSU/kernel common/drivers/kernelsu
 
-          # v3.2.2 and later
           if [ -d "KernelSU/uapi" ] && [ -L "common/drivers/kernelsu/include/uapi" ]; then
             rm -f common/drivers/kernelsu/include/uapi
             cp -r KernelSU/uapi common/drivers/kernelsu/include/uapi
           fi
 
-          # Compatibility fixes for KernelSU x86_64 syscall hook code on Android GKI.
-          if [ "${{ inputs.arch }}" = "x86_64" ]; then
+          if [ "$TARGET_ARCH" = "x86_64" ]; then
             if [ -f "common/drivers/kernelsu/syscall_hook_manager.c" ]; then
               if ! grep -qxF '#include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c; then
                 sed -i '/#include <linux\/tracepoint.h>/a #include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c
@@ -314,8 +381,7 @@ jobs:
               sed -i 's|"asm/patching.h"|"asm/text-patching.h"|g' common/drivers/kernelsu/hook/patch_memory.h
             fi
           fi
-          
-          # Determine whether KernelSU has the v3.2.0+ x86_64 indirect-safe check.
+
           KSU_HAS_INDIRECT_SAFE_CHECK=false
           TAG_OR_COMMIT="${{ inputs.ksu_version }}"
           if [[ "$TAG_OR_COMMIT" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
@@ -325,15 +391,14 @@ jobs:
               KSU_HAS_INDIRECT_SAFE_CHECK=true
             fi
           fi
-          
-          # Dynamic version calculation and git history check
+
           cd KernelSU
           if git cat-file -e 40e8fb7616bfd875babb45364f5262657538327a 2>/dev/null; then
             if git merge-base --is-ancestor 40e8fb7616bfd875babb45364f5262657538327a HEAD 2>/dev/null; then
               KSU_HAS_INDIRECT_SAFE_CHECK=true
             fi
           fi
-          
+
           KSU_GIT_VERSION=$(git rev-list --count HEAD)
           BASE_OFFSET=10000
           if grep -q "30000" kernel/Kbuild 2>/dev/null || grep -q "30000" kernel/Makefile 2>/dev/null; then
@@ -343,7 +408,7 @@ jobs:
           fi
           KSU_VERSION=$((BASE_OFFSET + KSU_GIT_VERSION))
           echo "Calculated KSU_VERSION: $KSU_VERSION"
-          echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+          echo "KSU_VERSION=$KSU_VERSION" >> "$GITHUB_ENV"
           cd ..
 
           for f in common/drivers/kernelsu/core/init.c common/drivers/kernelsu/ksu.c; do
@@ -351,11 +416,11 @@ jobs:
               KSU_HAS_INDIRECT_SAFE_CHECK=true
             fi
           done
-          
+
           KSU_X86_SYSCALL_CHECK_BYPASSED=false
           KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
           SHOULD_BYPASS=false
-          if [ "${{ inputs.arch }}" = "x86_64" ] && [ "$KSU_HAS_INDIRECT_SAFE_CHECK" = "true" ]; then
+          if [ "$TARGET_ARCH" = "x86_64" ] && [ "$KSU_HAS_INDIRECT_SAFE_CHECK" = "true" ]; then
             case "$KERNEL_VERSION" in
               5.15|6.1)
                 SHOULD_BYPASS=true
@@ -388,7 +453,6 @@ jobs:
           fi
           echo "KSU_X86_SYSCALL_CHECK_BYPASSED=$KSU_X86_SYSCALL_CHECK_BYPASSED" >> "$GITHUB_ENV"
 
-          # Hardcode calculated KSU_VERSION to bypass fallback 16
           for f in common/drivers/kernelsu/Makefile common/drivers/kernelsu/Kbuild; do
             if [ -f "$f" ]; then
               sed -i "s/ccflags-y += -DKSU_VERSION=16/ccflags-y += -DKSU_VERSION=$KSU_VERSION/g" "$f"
@@ -399,11 +463,29 @@ jobs:
       - name: Build GKI Kernel
         run: |
           cd kernel
-          ARCH="${{ inputs.arch }}"
-          if [ "$ARCH" = "x86_64" ]; then
-            tools/bazel run --config=fast --lto=none //common:kernel_x86_64_dist -- --dist_dir="${DIST_NAME}/"
+
+          run_dist_target() {
+            target="$1"
+            dest="$2"
+            help_output=$(tools/bazel run --config=fast --lto=none "$target" -- -h 2>&1 || true)
+            echo "$help_output"
+
+            if grep -q -- '--destdir' <<< "$help_output"; then
+              echo "Detected $target dist argument: --destdir"
+              tools/bazel run --config=fast --lto=none "$target" -- --destdir="$dest"
+            elif grep -q -- '--dist_dir' <<< "$help_output"; then
+              echo "Detected $target dist argument: --dist_dir"
+              tools/bazel run --config=fast --lto=none "$target" -- --dist_dir="$dest"
+            else
+              echo "Unable to detect dist argument for $target. Expected --destdir or --dist_dir in help output."
+              exit 1
+            fi
+          }
+
+          if [ "$TARGET_ARCH" = "x86_64" ]; then
+            run_dist_target //common:kernel_x86_64_dist "${DIST_NAME}/"
           else
-            tools/bazel run --config=fast --lto=none //common:kernel_aarch64_dist -- --dist_dir="${DIST_NAME}/"
+            run_dist_target //common:kernel_aarch64_dist "${DIST_NAME}/"
           fi
 
       - name: Prepare Artifacts
@@ -415,28 +497,25 @@ jobs:
           else
             REQUIRED_BOOT_ARG="none"
           fi
-          
-          # Copy compiled kernel images
-          if [ -f "bzImage" ]; then
-            cp bzImage ../../output/
-          fi
-          if [ -f "Image" ]; then
-            cp Image ../../output/
-          fi
-          if [ -f "Image.gz" ]; then
-            cp Image.gz ../../output/
-          fi
-          
-          # Generate metadata file
+
+          cp bzImage ../../output/ 2>/dev/null || true
+          cp Image ../../output/ 2>/dev/null || true
+          cp Image.gz ../../output/ 2>/dev/null || true
+
           cat > ../../output/build-info.txt << EOF
-          Build ID: ${{ env.BUILD_ID }}
-          Architecture: ${{ inputs.arch }}
+          Target ID: ${TARGET_ID}
+          Target Name: ${TARGET_NAME}
+          Build ID: ${BUILD_ID}
+          Architecture: ${TARGET_ARCH}
           Distribution Name: ${DIST_NAME}
+          Artifact Name: ${ARTIFACT_NAME}
           Android Label: ${ANDROID_LABEL}
           API Level: ${API_LEVEL}
+          Kernel Version: ${{ steps.metadata.outputs.kernel_version }}
+          Kernel Sublevel: ${{ steps.metadata.outputs.sublevel }}
           KSU Variant: ${{ inputs.ksu_variant }}
           KSU Version Label: ${KSU_VERSION_LABEL}
-          KSU Version Code: ${{ env.KSU_VERSION }}
+          KSU Version Code: ${KSU_VERSION}
           KSU Git Version: ${{ inputs.ksu_version }}
           x86_64 Syscall Hardening Patch Applied: ${KSU_X86_SYSCALL_HARDENING_PATCHED}
           x86_64 KernelSU Syscall Check Bypassed: ${KSU_X86_SYSCALL_CHECK_BYPASSED}
@@ -447,5 +526,94 @@ jobs:
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.dist.outputs.dist_name }}
+          name: ${{ steps.dist.outputs.artifact_name }}
           path: output/*
+          if-no-files-found: error
+          compression-level: 9
+
+  release:
+    name: Publish Release
+    needs:
+      - prepare-matrix
+      - build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_type != 'Actions' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Tag
+        id: tag
+        run: |
+          LATEST_TAG=$(gh api "repos/${{ github.repository }}/tags" --jq '.[0].name' 2>/dev/null || echo "v0.0.0")
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+
+          if [[ "$LATEST_TAG" =~ ^(.*)-r([0-9]+)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            REV="${BASH_REMATCH[2]}"
+            NEW_TAG="${VERSION}-r$((REV + 1))"
+          else
+            NEW_TAG="${LATEST_TAG}-r1"
+          fi
+          echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-artifacts
+          merge-multiple: false
+
+      - name: Package Release Zips
+        run: |
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y zip
+          fi
+
+          mkdir -p release-assets
+          for dir in downloaded-artifacts/*/; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            (cd "$dir" && zip -r -q -9 "../../release-assets/${name}.zip" .)
+          done
+          ls -la release-assets
+
+      - name: Set Release Body
+        run: |
+          cat > release_body.md << EOF
+          ## AVD GKI Kernels with ${{ inputs.ksu_variant }}
+
+          KernelSU ref: \`${{ inputs.ksu_version }}\`
+
+          Built from \`.github/avd-targets.json\` with target selector \`${{ inputs.avd_target }}\` and arch selector \`${{ inputs.arch }}\`.
+
+          For Android 15+ x86_64 AVDs, check each artifact's \`build-info.txt\` for whether \`syscall_hardening=off\` is required.
+          EOF
+
+          echo "" >> release_body.md
+          echo "### Artifacts" >> release_body.md
+          for info in downloaded-artifacts/*/build-info.txt; do
+            [ -f "$info" ] || continue
+            echo "" >> release_body.md
+            echo '```text' >> release_body.md
+            sed 's/^          //' "$info" >> release_body.md
+            echo '```' >> release_body.md
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          body_path: release_body.md
+          draft: false
+          prerelease: ${{ inputs.release_type == 'Pre-Release' }}
+          files: release-assets/*.zip

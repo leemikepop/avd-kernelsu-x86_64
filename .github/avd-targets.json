@@ -1,0 +1,49 @@
+{
+  "include": [
+    {
+      "id": "a13-api33-5.15",
+      "name": "Android 13 API 33 5.15",
+      "build_id": "10871489",
+      "android_version": "android13",
+      "android_label": "A13",
+      "api_level": "33",
+      "kernel_version": "5.15"
+    },
+    {
+      "id": "a14-api34-6.1",
+      "name": "Android 14 API 34 6.1",
+      "build_id": "9964412",
+      "android_version": "android14",
+      "android_label": "A14",
+      "api_level": "34",
+      "kernel_version": "6.1"
+    },
+    {
+      "id": "a15-api35-6.6",
+      "name": "Android 15 API 35 6.6",
+      "build_id": "11987101",
+      "android_version": "android15",
+      "android_label": "A15",
+      "api_level": "35",
+      "kernel_version": "6.6"
+    },
+    {
+      "id": "a16-api36.0-6.6",
+      "name": "Android 16 API 36.0 6.6",
+      "build_id": "13070261",
+      "android_version": "android16",
+      "android_label": "A16",
+      "api_level": "36.0",
+      "kernel_version": "6.6"
+    },
+    {
+      "id": "a16-api36.1-6.12",
+      "name": "Android 16 API 36.1 6.12",
+      "build_id": "13996879",
+      "android_version": "android16",
+      "android_label": "A16",
+      "api_level": "36.1",
+      "kernel_version": "6.12"
+    }
+  ]
+}

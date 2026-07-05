@@ -202,6 +202,7 @@ KERNEL_VERSION="$(awk '/^VERSION =/{v=$3} /^PATCHLEVEL =/{p=$3} END{print v "." 
 echo "Detected kernel version: $KERNEL_VERSION"
 cd "$COMMON_DIR"
 
+PATCH_MODE=standard
 case "$KERNEL_VERSION" in
   6.6)
     PATCH_URLS=(
@@ -210,6 +211,7 @@ case "$KERNEL_VERSION" in
     )
     ;;
   6.12)
+    PATCH_MODE=android16_6_12
     PATCH_URLS=(
       "https://github.com/android-generic/kernel-zenith/commit/dd2c602268fdc81f4d3b662f6a15142ac0ec7bcd.patch"
       "https://github.com/android-generic/kernel-zenith/commit/7d99237ae5da61c19447138da3282ae37d43857b.patch"
@@ -236,6 +238,44 @@ if [ "${#PATCH_URLS[@]}" -gt 0 ]; then
     && grep -q 'syscall_hardening' arch/x86/kernel/cpu/common.c \
     && grep -q 'sys_call_table\[unr\]' arch/x86/entry/common.c; then
     echo "KernelSU x86_64 syscall hardening patches 已存在，略過套用。"
+  elif [ "$PATCH_MODE" = "android16_6_12" ]; then
+    echo "Applying Android 16 6.12-compatible KernelSU x86_64 syscall hardening patches..."
+
+    if ! grep -q 'X86_FEATURE_INDIRECT_SAFE' arch/x86/include/asm/cpufeatures.h; then
+      sed -i '/X86_FEATURE_INDIRECT_THUNK_ITS/a #define X86_FEATURE_INDIRECT_SAFE\t(21*32 + 7) /* "" Indirect branches can be used for syscalls */' arch/x86/include/asm/cpufeatures.h
+    fi
+    if ! grep -q 'X86_FEATURE_INDIRECT_SAFE' arch/x86/include/asm/cpufeatures.h; then
+      echo "Failed to add X86_FEATURE_INDIRECT_SAFE to cpufeatures.h"
+      exit 1
+    fi
+
+    if ! grep -q 'cpu_show_syscall_hardening' include/linux/cpu.h; then
+      sed -i '/extern ssize_t cpu_show_tsa/i #if defined(CONFIG_X86) || defined(CONFIG_X86_64)\nextern ssize_t cpu_show_syscall_hardening(struct device *dev,\n\t\t\t\t\t       struct device_attribute *attr, char *buf);\n#endif\n' include/linux/cpu.h
+    fi
+    if ! grep -q 'cpu_show_syscall_hardening' include/linux/cpu.h; then
+      echo "Failed to add cpu_show_syscall_hardening declaration to include/linux/cpu.h"
+      exit 1
+    fi
+
+    curl -L "${PATCH_URLS[0]}" -o /tmp/ksu-x86-syscall-hardening-1.patch
+    git apply --check --whitespace=fix \
+      --exclude=arch/x86/include/asm/cpufeatures.h \
+      --exclude=arch/x86/kernel/cpu/bugs.c \
+      /tmp/ksu-x86-syscall-hardening-1.patch
+    git apply --whitespace=fix \
+      --exclude=arch/x86/include/asm/cpufeatures.h \
+      --exclude=arch/x86/kernel/cpu/bugs.c \
+      /tmp/ksu-x86-syscall-hardening-1.patch
+
+    curl -L "${PATCH_URLS[1]}" -o /tmp/ksu-x86-syscall-hardening-2.patch
+    git apply --check --whitespace=fix \
+      --exclude=arch/x86/kernel/cpu/bugs.c \
+      --exclude=include/linux/cpu.h \
+      /tmp/ksu-x86-syscall-hardening-2.patch
+    git apply --whitespace=fix \
+      --exclude=arch/x86/kernel/cpu/bugs.c \
+      --exclude=include/linux/cpu.h \
+      /tmp/ksu-x86-syscall-hardening-2.patch
   else
     for patch_url in "${PATCH_URLS[@]}"; do
       echo "Applying $patch_url"
@@ -330,22 +370,42 @@ BUG_ON implicit declaration
 1. **執行編譯指令**：
    在核心源碼根目錄下執行：
 
-   ```bash
-   # 編譯核心本體 (bzImage)
-   tools/bazel run --config=fast --lto=none //common:kernel_x86_64_dist -- --dist_dir=out/dist/
+  ```bash
+  detect_dist_arg() {
+    local target="$1"
+    local help_output
 
-   # 編譯 AVD 虛擬裝置驅動模組 (*.ko)，這是讓 AVD 擁有網路與音效的關鍵
-   tools/bazel run --config=fast --lto=none //common-modules/virtual-device:virtual_device_x86_64_dist -- --dist_dir=out/dist/
-   ```
+    help_output=$(tools/bazel run --config=fast --lto=none "$target" -- -h 2>&1 || true)
+    printf '%s\n' "$help_output" >&2
+
+    if grep -q -- '--destdir' <<< "$help_output"; then
+      echo "--destdir"
+    elif grep -q -- '--dist_dir' <<< "$help_output"; then
+      echo "--dist_dir"
+    else
+      echo "無法判斷 $target 使用 --destdir 或 --dist_dir" >&2
+      return 1
+    fi
+  }
+
+  DIST_ARG="$(detect_dist_arg //common:kernel_x86_64_dist)"
+  VIRT_DIST_ARG="$(detect_dist_arg //common-modules/virtual-device:virtual_device_x86_64_dist)"
+
+  # 編譯核心本體 (bzImage)
+  tools/bazel run --config=fast --lto=none //common:kernel_x86_64_dist -- "${DIST_ARG}=out/dist-13070261_A16-API36.0-6.6-x86_64_v320/"
+
+  # 編譯 AVD 虛擬裝置驅動模組 (*.ko)，這是讓 AVD 擁有網路與音效的關鍵
+  tools/bazel run --config=fast --lto=none //common-modules/virtual-device:virtual_device_x86_64_dist -- "${VIRT_DIST_ARG}=out/dist-13070261_A16-API36.0-6.6-x86_64_v320/"
+  ```
 
 2. **替換 AVD 內核**：
 
-   ```powershell
-   emulator -avd <AVD_NAME> -kernel <path\to\bzImage> -no-snapshot-load -show-kernel
+  ```powershell
+  emulator -avd <AVD_NAME> -kernel <path\to\bzImage> -no-snapshot-load -show-kernel
 
-   # For A15+ with KernelSU v3.2.0 or newer, add the following boot argument to disable syscall hardening.
-   emulator -avd <AVD_NAME> -kernel <path\to\bzImage> -no-snapshot-load -show-kernel -append "syscall_hardening=off"
-   ```
+  # For A15+ with KernelSU v3.2.0 or newer, add the following boot argument to disable syscall hardening.
+  emulator -avd <AVD_NAME> -kernel <path\to\bzImage> -no-snapshot-load -show-kernel -append "syscall_hardening=off"
+  ```
 
 ---
 
