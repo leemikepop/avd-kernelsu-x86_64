@@ -20,10 +20,10 @@ on:
           - 'a16-api36.1-6.12'
         default: 'all'
       ksu_version:
-        description: 'KernelSU / KernelSU-Next Version Tag or Commit (e.g. v3.2.0)'
+        description: 'KernelSU / KernelSU-Next Version Tag or Commit (default: v3.1.0; v3.2.0+ is experimental on x86_64 AVD)'
         required: true
         type: string
-        default: 'v3.2.0'
+        default: 'v3.1.0'
       ksu_variant:
         description: 'KernelSU Variant'
         required: true
@@ -151,7 +151,9 @@ jobs:
           sudo apt-get install -y repo git curl
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
+          echo "KSU_HAS_INDIRECT_SAFE_CHECK=false" >> "$GITHUB_ENV"
           echo "KSU_X86_SYSCALL_HARDENING_PATCHED=false" >> "$GITHUB_ENV"
+          echo "KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=false" >> "$GITHUB_ENV"
           echo "KSU_X86_SYSCALL_CHECK_BYPASSED=false" >> "$GITHUB_ENV"
 
       - name: Sync Kernel Source
@@ -211,7 +213,7 @@ jobs:
           fi
 
           API_LABEL="API$(echo "$API_LEVEL" | sed -E 's/[^0-9A-Za-z._-]+/-/g; s/^-+//; s/-+$//')"
-          DIST_NAME="dist-${BUILD_ID}_${ANDROID_LABEL}-${API_LABEL}-${KERNEL_VERSION}-${ARCH_LABEL}_${KSU_VERSION_LABEL}"
+          DIST_NAME="dist-${BUILD_ID}-${ANDROID_LABEL}-${API_LABEL}-${KERNEL_VERSION}-${ARCH_LABEL}-${KSU_VERSION_LABEL}"
           ARTIFACT_NAME="$DIST_NAME"
 
           echo "Resolved DIST_NAME: $DIST_NAME"
@@ -248,13 +250,161 @@ jobs:
             sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace/hooks/fs.h>' ./fs/namespace.c
           fi
 
+      - name: Integrate KernelSU
+        run: |
+          cd kernel
+
+          case "${{ inputs.ksu_variant }}" in
+            KernelSU)
+              KSU_REPO_URL="https://github.com/tiann/KernelSU.git"
+              KSU_REPO_DIR="KernelSU"
+              ;;
+            KernelSU-Next)
+              KSU_REPO_URL="https://github.com/KernelSU-Next/KernelSU-Next.git"
+              KSU_REPO_DIR="KernelSU-Next"
+              ;;
+            *)
+              echo "Unsupported KernelSU variant: ${{ inputs.ksu_variant }}"
+              exit 1
+              ;;
+          esac
+
+          git clone "$KSU_REPO_URL" "$KSU_REPO_DIR"
+          "./$KSU_REPO_DIR/kernel/setup.sh" "${{ inputs.ksu_version }}"
+
+          rm -rf common/drivers/kernelsu
+          cp -r "$KSU_REPO_DIR/kernel" common/drivers/kernelsu
+
+          if [ -d "$KSU_REPO_DIR/uapi" ] && [ -L "common/drivers/kernelsu/include/uapi" ]; then
+            rm -f common/drivers/kernelsu/include/uapi
+            cp -r "$KSU_REPO_DIR/uapi" common/drivers/kernelsu/include/uapi
+          fi
+
+          if [ -f "common/drivers/kernelsu/feature/sulog.h" ]; then
+            if grep -Eq '__init|__exit' common/drivers/kernelsu/feature/sulog.h \
+              && ! grep -qxF '#include <linux/init.h>' common/drivers/kernelsu/feature/sulog.h; then
+              sed -i '/#include <linux\/types.h>/a #include <linux/init.h>' common/drivers/kernelsu/feature/sulog.h
+            fi
+          fi
+
+          if [ "$TARGET_ARCH" = "x86_64" ]; then
+            if [ -f "common/drivers/kernelsu/syscall_hook_manager.c" ]; then
+              if ! grep -qxF '#include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c; then
+                sed -i '/#include <linux\/tracepoint.h>/a #include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c
+              fi
+              if ! grep -qxF '#include <asm/compat.h>' common/drivers/kernelsu/syscall_hook_manager.c; then
+                sed -i '/#include <asm\/syscall.h>/a #if defined(__x86_64__)\n#include <asm/compat.h>\n#endif' common/drivers/kernelsu/syscall_hook_manager.c
+              fi
+            fi
+
+            if [ -f "common/drivers/kernelsu/hook/patch_memory.h" ]; then
+              if ! grep -qxF '#include <linux/bug.h>' common/drivers/kernelsu/hook/patch_memory.h; then
+                sed -i '/#include <linux\/types.h>/a #include <linux/bug.h>' common/drivers/kernelsu/hook/patch_memory.h
+              fi
+              sed -i 's|"asm/patching.h"|"asm/text-patching.h"|g' common/drivers/kernelsu/hook/patch_memory.h
+            fi
+          fi
+
+          KSU_HAS_INDIRECT_SAFE_CHECK=false
+          TAG_OR_COMMIT="${{ inputs.ksu_version }}"
+          if [[ "$TAG_OR_COMMIT" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            KSU_MAJOR="${BASH_REMATCH[1]}"
+            KSU_MINOR="${BASH_REMATCH[2]}"
+            if (( KSU_MAJOR > 3 || (KSU_MAJOR == 3 && KSU_MINOR >= 2) )); then
+              KSU_HAS_INDIRECT_SAFE_CHECK=true
+            fi
+          fi
+
+          cd "$KSU_REPO_DIR"
+          if git cat-file -e 40e8fb7616bfd875babb45364f5262657538327a 2>/dev/null; then
+            if git merge-base --is-ancestor 40e8fb7616bfd875babb45364f5262657538327a HEAD 2>/dev/null; then
+              KSU_HAS_INDIRECT_SAFE_CHECK=true
+            fi
+          fi
+
+          KSU_GIT_VERSION=$(git rev-list --count HEAD)
+          KSU_VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null || printf '%s' "${{ inputs.ksu_version }}")
+          BASE_OFFSET=10000
+          if grep -q "30000" kernel/Kbuild 2>/dev/null || grep -q "30000" kernel/Makefile 2>/dev/null; then
+            BASE_OFFSET=30000
+          elif grep -q "10000" kernel/Kbuild 2>/dev/null || grep -q "10000" kernel/Makefile 2>/dev/null; then
+            BASE_OFFSET=10000
+          fi
+          KSU_VERSION=$((BASE_OFFSET + KSU_GIT_VERSION))
+          echo "Calculated KSU_VERSION: $KSU_VERSION"
+          echo "Resolved KSU_VERSION_TAG: $KSU_VERSION_TAG"
+          echo "KSU_VERSION=$KSU_VERSION" >> "$GITHUB_ENV"
+          echo "KSU_VERSION_TAG=$KSU_VERSION_TAG" >> "$GITHUB_ENV"
+          cd ..
+
+          for f in common/drivers/kernelsu/core/init.c common/drivers/kernelsu/ksu.c; do
+            if [ -f "$f" ] && grep -q 'X86_FEATURE_INDIRECT_SAFE' "$f"; then
+              KSU_HAS_INDIRECT_SAFE_CHECK=true
+            fi
+          done
+
+          KSU_X86_SYSCALL_CHECK_BYPASSED=false
+          KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
+          SHOULD_BYPASS=false
+          if [ "$TARGET_ARCH" = "x86_64" ] && [ "$KSU_HAS_INDIRECT_SAFE_CHECK" = "true" ]; then
+            case "$KERNEL_VERSION" in
+              5.15|6.1)
+                SHOULD_BYPASS=true
+                ;;
+              6.6|6.12|6.18)
+                SHOULD_BYPASS=false
+                ;;
+              *)
+                echo "Unsupported x86_64 kernel version for KernelSU syscall check handling: $KERNEL_VERSION"
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [ "$SHOULD_BYPASS" = "true" ]; then
+            echo "Patching KernelSU v3.2.0+ x86_64 syscall check for older syscall-table GKI ($KERNEL_VERSION)..."
+            for f in common/drivers/kernelsu/core/init.c common/drivers/kernelsu/ksu.c; do
+              if [ -f "$f" ] && grep -q 'X86_FEATURE_INDIRECT_SAFE' "$f"; then
+                sed -i '/#ifndef X86_FEATURE_INDIRECT_SAFE/,/#endif/d' "$f"
+                sed -i '/if (!boot_cpu_has(X86_FEATURE_INDIRECT_SAFE)) {/,/}/d' "$f"
+                KSU_X86_SYSCALL_CHECK_BYPASSED=true
+              fi
+            done
+            if [ "$KSU_X86_SYSCALL_CHECK_BYPASSED" != "true" ]; then
+              echo "Expected to bypass KernelSU x86_64 syscall check, but no supported KernelSU init file was found."
+              exit 1
+            fi
+          else
+            echo "Skipping KernelSU x86_64 syscall check bypass (KSU_HAS_INDIRECT_SAFE_CHECK=$KSU_HAS_INDIRECT_SAFE_CHECK, kernel=$KERNEL_VERSION)"
+          fi
+          echo "KSU_HAS_INDIRECT_SAFE_CHECK=$KSU_HAS_INDIRECT_SAFE_CHECK" >> "$GITHUB_ENV"
+          echo "KSU_X86_SYSCALL_CHECK_BYPASSED=$KSU_X86_SYSCALL_CHECK_BYPASSED" >> "$GITHUB_ENV"
+
+          for f in common/drivers/kernelsu/Makefile common/drivers/kernelsu/Kbuild; do
+            if [ -f "$f" ]; then
+              sed -i "s/ccflags-y += -DKSU_VERSION=16/ccflags-y += -DKSU_VERSION=$KSU_VERSION/g" "$f"
+              sed -i "s/KSU_VERSION := 16/KSU_VERSION := $KSU_VERSION/g" "$f"
+              sed -i "s/KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := $KSU_VERSION/g" "$f"
+              KSU_VERSION_TAG_SED=$(printf '%s' "$KSU_VERSION_TAG" | sed -e 's/[\/&]/\\&/g')
+              sed -i "s/KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := $KSU_VERSION_TAG_SED/g" "$f"
+            fi
+          done
+
       - name: Apply x86_64 Syscall Hardening Patches
         if: ${{ matrix.arch == 'x86_64' }}
         run: |
+          if [ "${KSU_HAS_INDIRECT_SAFE_CHECK:-false}" != "true" ]; then
+            echo "KernelSU ref does not use X86_FEATURE_INDIRECT_SAFE checks; skipping x86_64 syscall hardening patches."
+            echo "KSU_X86_SYSCALL_HARDENING_PATCHED=false" >> "$GITHUB_ENV"
+            echo "KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
           cd kernel/common
 
           KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
           KSU_X86_SYSCALL_HARDENING_PATCHED=false
+          KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=false
           PATCH_URLS=()
           PATCH_MODE=standard
 
@@ -338,127 +488,23 @@ jobs:
                 git apply --whitespace=fix /tmp/ksu-x86-syscall-hardening.patch
               done
             fi
-            git diff --check
+
+            if grep -q 'syscall_hardening __ro_after_init = SYSCALL_HARDENING_ON;' arch/x86/kernel/cpu/common.c; then
+              echo "Defaulting syscall_hardening to off for Android Emulator, which does not expose a stable -append kernel cmdline option."
+              sed -i 's/syscall_hardening __ro_after_init = SYSCALL_HARDENING_ON;/syscall_hardening __ro_after_init = SYSCALL_HARDENING_OFF;/' arch/x86/kernel/cpu/common.c
+            fi
+            if ! grep -q 'syscall_hardening __ro_after_init = SYSCALL_HARDENING_OFF;' arch/x86/kernel/cpu/common.c; then
+              echo "Expected syscall_hardening to default to off after x86_64 hardening patch handling."
+              exit 1
+            fi
+
+            git diff --check -- arch/x86 include/linux/cpu.h drivers/base/cpu.c
             KSU_X86_SYSCALL_HARDENING_PATCHED=true
+            KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=true
           fi
 
           echo "KSU_X86_SYSCALL_HARDENING_PATCHED=$KSU_X86_SYSCALL_HARDENING_PATCHED" >> "$GITHUB_ENV"
-
-      - name: Integrate KernelSU
-        run: |
-          cd kernel
-
-          if [ "${{ inputs.ksu_variant }}" = "KernelSU-Next" ]; then
-            git clone https://github.com/rifsxd/KernelSU-Next.git KernelSU
-          else
-            git clone https://github.com/tiann/KernelSU.git KernelSU
-          fi
-
-          ./KernelSU/kernel/setup.sh "${{ inputs.ksu_version }}"
-
-          rm -rf common/drivers/kernelsu
-          cp -r KernelSU/kernel common/drivers/kernelsu
-
-          if [ -d "KernelSU/uapi" ] && [ -L "common/drivers/kernelsu/include/uapi" ]; then
-            rm -f common/drivers/kernelsu/include/uapi
-            cp -r KernelSU/uapi common/drivers/kernelsu/include/uapi
-          fi
-
-          if [ "$TARGET_ARCH" = "x86_64" ]; then
-            if [ -f "common/drivers/kernelsu/syscall_hook_manager.c" ]; then
-              if ! grep -qxF '#include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c; then
-                sed -i '/#include <linux\/tracepoint.h>/a #include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c
-              fi
-              if ! grep -qxF '#include <asm/compat.h>' common/drivers/kernelsu/syscall_hook_manager.c; then
-                sed -i '/#include <asm\/syscall.h>/a #if defined(__x86_64__)\n#include <asm/compat.h>\n#endif' common/drivers/kernelsu/syscall_hook_manager.c
-              fi
-            fi
-
-            if [ -f "common/drivers/kernelsu/hook/patch_memory.h" ]; then
-              if ! grep -qxF '#include <linux/bug.h>' common/drivers/kernelsu/hook/patch_memory.h; then
-                sed -i '/#include <linux\/types.h>/a #include <linux/bug.h>' common/drivers/kernelsu/hook/patch_memory.h
-              fi
-              sed -i 's|"asm/patching.h"|"asm/text-patching.h"|g' common/drivers/kernelsu/hook/patch_memory.h
-            fi
-          fi
-
-          KSU_HAS_INDIRECT_SAFE_CHECK=false
-          TAG_OR_COMMIT="${{ inputs.ksu_version }}"
-          if [[ "$TAG_OR_COMMIT" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            KSU_MAJOR="${BASH_REMATCH[1]}"
-            KSU_MINOR="${BASH_REMATCH[2]}"
-            if (( KSU_MAJOR > 3 || (KSU_MAJOR == 3 && KSU_MINOR >= 2) )); then
-              KSU_HAS_INDIRECT_SAFE_CHECK=true
-            fi
-          fi
-
-          cd KernelSU
-          if git cat-file -e 40e8fb7616bfd875babb45364f5262657538327a 2>/dev/null; then
-            if git merge-base --is-ancestor 40e8fb7616bfd875babb45364f5262657538327a HEAD 2>/dev/null; then
-              KSU_HAS_INDIRECT_SAFE_CHECK=true
-            fi
-          fi
-
-          KSU_GIT_VERSION=$(git rev-list --count HEAD)
-          BASE_OFFSET=10000
-          if grep -q "30000" kernel/Kbuild 2>/dev/null || grep -q "30000" kernel/Makefile 2>/dev/null; then
-            BASE_OFFSET=30000
-          elif grep -q "10000" kernel/Kbuild 2>/dev/null || grep -q "10000" kernel/Makefile 2>/dev/null; then
-            BASE_OFFSET=10000
-          fi
-          KSU_VERSION=$((BASE_OFFSET + KSU_GIT_VERSION))
-          echo "Calculated KSU_VERSION: $KSU_VERSION"
-          echo "KSU_VERSION=$KSU_VERSION" >> "$GITHUB_ENV"
-          cd ..
-
-          for f in common/drivers/kernelsu/core/init.c common/drivers/kernelsu/ksu.c; do
-            if [ -f "$f" ] && grep -q 'X86_FEATURE_INDIRECT_SAFE' "$f"; then
-              KSU_HAS_INDIRECT_SAFE_CHECK=true
-            fi
-          done
-
-          KSU_X86_SYSCALL_CHECK_BYPASSED=false
-          KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
-          SHOULD_BYPASS=false
-          if [ "$TARGET_ARCH" = "x86_64" ] && [ "$KSU_HAS_INDIRECT_SAFE_CHECK" = "true" ]; then
-            case "$KERNEL_VERSION" in
-              5.15|6.1)
-                SHOULD_BYPASS=true
-                ;;
-              6.6|6.12|6.18)
-                SHOULD_BYPASS=false
-                ;;
-              *)
-                echo "Unsupported x86_64 kernel version for KernelSU syscall check handling: $KERNEL_VERSION"
-                exit 1
-                ;;
-            esac
-          fi
-
-          if [ "$SHOULD_BYPASS" = "true" ]; then
-            echo "Patching KernelSU v3.2.0+ x86_64 syscall check for older syscall-table GKI ($KERNEL_VERSION)..."
-            for f in common/drivers/kernelsu/core/init.c common/drivers/kernelsu/ksu.c; do
-              if [ -f "$f" ] && grep -q 'X86_FEATURE_INDIRECT_SAFE' "$f"; then
-                sed -i '/#ifndef X86_FEATURE_INDIRECT_SAFE/,/#endif/d' "$f"
-                sed -i '/if (!boot_cpu_has(X86_FEATURE_INDIRECT_SAFE)) {/,/}/d' "$f"
-                KSU_X86_SYSCALL_CHECK_BYPASSED=true
-              fi
-            done
-            if [ "$KSU_X86_SYSCALL_CHECK_BYPASSED" != "true" ]; then
-              echo "Expected to bypass KernelSU x86_64 syscall check, but no supported KernelSU init file was found."
-              exit 1
-            fi
-          else
-            echo "Skipping KernelSU x86_64 syscall check bypass (KSU_HAS_INDIRECT_SAFE_CHECK=$KSU_HAS_INDIRECT_SAFE_CHECK, kernel=$KERNEL_VERSION)"
-          fi
-          echo "KSU_X86_SYSCALL_CHECK_BYPASSED=$KSU_X86_SYSCALL_CHECK_BYPASSED" >> "$GITHUB_ENV"
-
-          for f in common/drivers/kernelsu/Makefile common/drivers/kernelsu/Kbuild; do
-            if [ -f "$f" ]; then
-              sed -i "s/ccflags-y += -DKSU_VERSION=16/ccflags-y += -DKSU_VERSION=$KSU_VERSION/g" "$f"
-              sed -i "s/KSU_VERSION := 16/KSU_VERSION := $KSU_VERSION/g" "$f"
-            fi
-          done
+          echo "KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=$KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF" >> "$GITHUB_ENV"
 
       - name: Build GKI Kernel
         run: |
@@ -492,7 +538,7 @@ jobs:
         run: |
           mkdir -p output
           cd "kernel/${DIST_NAME}"
-          if [ "$KSU_X86_SYSCALL_HARDENING_PATCHED" = "true" ]; then
+          if [ "$KSU_X86_SYSCALL_HARDENING_PATCHED" = "true" ] && [ "$KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF" != "true" ]; then
             REQUIRED_BOOT_ARG="syscall_hardening=off"
           else
             REQUIRED_BOOT_ARG="none"
@@ -516,8 +562,10 @@ jobs:
           KSU Variant: ${{ inputs.ksu_variant }}
           KSU Version Label: ${KSU_VERSION_LABEL}
           KSU Version Code: ${KSU_VERSION}
+          KSU Resolved Tag: ${KSU_VERSION_TAG}
           KSU Git Version: ${{ inputs.ksu_version }}
           x86_64 Syscall Hardening Patch Applied: ${KSU_X86_SYSCALL_HARDENING_PATCHED}
+          x86_64 Syscall Hardening Default Off: ${KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF}
           x86_64 KernelSU Syscall Check Bypassed: ${KSU_X86_SYSCALL_CHECK_BYPASSED}
           Required Emulator Boot Arg: ${REQUIRED_BOOT_ARG}
           Build Date: $(date -u)
@@ -595,7 +643,7 @@ jobs:
 
           Built from \`.github/avd-targets.json\` with target selector \`${{ inputs.avd_target }}\` and arch selector \`${{ inputs.arch }}\`.
 
-          For Android 15+ x86_64 AVDs, check each artifact's \`build-info.txt\` for whether \`syscall_hardening=off\` is required.
+          For KernelSU v3.2.0+ x86_64 AVD builds, the workflow defaults syscall hardening to off inside the test kernel because Android Emulator does not expose a stable \`-append\` kernel cmdline option.
           EOF
 
           echo "" >> release_body.md
