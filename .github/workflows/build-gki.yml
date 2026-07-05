@@ -174,19 +174,42 @@ jobs:
           # rm -f common/drivers/kernelsu/include/uapi
           # cp -r KernelSU/uapi common/drivers/kernelsu/include/uapi
           
-          # Dynamic version calculation
+          # Determine if we should bypass the x86_64 syscall check
+          BYPASS=true
+          TAG_OR_COMMIT="${{ inputs.ksu_version }}"
+          if [[ "$TAG_OR_COMMIT" =~ ^v([3-9])\.([2-9]|[1-9][0-9]+)\. ]]; then
+            BYPASS=false
+          fi
+          
+          # Dynamic version calculation and git history check
           cd KernelSU
+          if git cat-file -e 40e8fb7616bfd875babb45364f5262657538327a 2>/dev/null; then
+            if git merge-base --is-ancestor 40e8fb7616bfd875babb45364f5262657538327a HEAD 2>/dev/null; then
+              BYPASS=false
+            fi
+          fi
+          
           KSU_GIT_VERSION=$(git rev-list --count HEAD)
           BASE_OFFSET=10000
-          if grep -q "30000" kernel/Makefile 2>/dev/null; then
+          if grep -q "30000" kernel/Kbuild 2>/dev/null || grep -q "30000" kernel/Makefile 2>/dev/null; then
             BASE_OFFSET=30000
-          elif grep -q "10000" kernel/Makefile 2>/dev/null; then
+          elif grep -q "10000" kernel/Kbuild 2>/dev/null || grep -q "10000" kernel/Makefile 2>/dev/null; then
             BASE_OFFSET=10000
           fi
           KSU_VERSION=$((BASE_OFFSET + KSU_GIT_VERSION))
           echo "Calculated KSU_VERSION: $KSU_VERSION"
           echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
           cd ..
+          
+          if [ "$BYPASS" = "true" ]; then
+            if [ -f "common/drivers/kernelsu/core/init.c" ]; then
+              echo "Patching KernelSU x86_64 syscall check..."
+              sed -i '/FATAL: Your kernel is missing the indirect syscall bypass/d' common/drivers/kernelsu/core/init.c
+              sed -i '/if (!boot_cpu_has(X86_FEATURE_INDIRECT_SAFE)) {/,/}/d' common/drivers/kernelsu/core/init.c
+            fi
+          else
+            echo "Skipping KernelSU x86_64 syscall check bypass (KSU >= v3.2.0 or has commit 40e8fb76)"
+          fi
 
           # Hardcode calculated KSU_VERSION to bypass fallback 16
           for f in common/drivers/kernelsu/Makefile common/drivers/kernelsu/Kbuild; do
