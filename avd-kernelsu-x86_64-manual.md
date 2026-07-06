@@ -524,11 +524,16 @@ drivers/kernelsu/hook/x86_64/../patch_memory.h:15:10: fatal error: 'asm/patching
   # tools/bazel run --config=fast --lto=none //common-modules/virtual-device:virtual_device_x86_64_dist -- "${VIRT_DIST_ARG}=out/${DIST_NAME}/"
   ```
 
-   GitHub Actions release 對應規則：
+   GitHub Actions 現在分成兩個入口：
 
-   * 發 KernelSU `v3.1.0`：`AVD Target = all`、`KSU Version Tag = v3.1.0`、`Release Type = Release` 或 `Pre-Release`，會一次產出 A13、A14、A15、A16 API 36.0、A16 API 36.1。
-   * 發 KernelSU `v3.2.0`：`AVD Target = all`、`KSU Version Tag = v3.2.0`、`Release Type = Release` 或 `Pre-Release`，release matrix 會自動只保留 A15、A16 API 36.0、A16 API 36.1。
-   * `KSU Version Tag = auto` 只給 Actions artifact 測試用；真正發 GitHub Release 時必須填明確版本，避免同一個 release 混入不同 KernelSU ref。
+   * **Build AVD GKI Kernels**：一般測試用，只上傳 Actions artifacts。`KSU Ref` 可以填 `auto`、tag、branch 或 commit。
+   * **Release AVD GKI Kernels**：正式發 GitHub Release 用。選擇 `KernelSU` 或 `KernelSU-Next`，並填入明確的 `vX.Y.Z` 版本 tag；不接受 `auto`、branch 或 commit。
+
+   GitHub Release 對應規則：
+
+   * 發 KernelSU / KernelSU-Next `v3.1.x` 或更舊：release workflow 會一次產出 A13、A14、A15、A16 API 36.0、A16 API 36.1。
+   * 發 KernelSU / KernelSU-Next `v3.2.0` 或更新：release workflow 會自動只保留 A15、A16 API 36.0、A16 API 36.1。
+   * Release tag 會使用 `KernelSU-v3.2.0` 或 `KernelSU-Next-v3.3.0` 這種格式；如果同一版本重發，會自動改成 `-r2`、`-r3`。
 
 1. **替換 AVD 內核**：
 

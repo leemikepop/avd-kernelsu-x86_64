@@ -1,0 +1,180 @@
+name: Release AVD GKI Kernels
+
+permissions:
+  contents: write
+  actions: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_variant:
+        description: 'KernelSU project to release'
+        required: true
+        type: choice
+        options:
+          - 'KernelSU'
+          - 'KernelSU-Next'
+        default: 'KernelSU'
+      ksu_version_tag:
+        description: 'Release tag from the selected KernelSU project, must be vX.Y.Z'
+        required: true
+        type: string
+        default: 'v3.2.0'
+      arch:
+        description: 'Target architecture'
+        required: true
+        type: choice
+        options:
+          - 'x86_64'
+          - 'arm64'
+          - 'both'
+        default: 'x86_64'
+      release_type:
+        description: 'GitHub Release visibility'
+        required: true
+        type: choice
+        options:
+          - 'Pre-Release'
+          - 'Release'
+        default: 'Pre-Release'
+
+jobs:
+  validate:
+    name: Validate Release Inputs
+    runs-on: ubuntu-22.04
+    outputs:
+      version_tag: ${{ steps.validate.outputs.version_tag }}
+      version_tuple: ${{ steps.validate.outputs.version_tuple }}
+      release_targets: ${{ steps.validate.outputs.release_targets }}
+    steps:
+      - name: Validate KernelSU version tag
+        id: validate
+        env:
+          KSU_VERSION_TAG: ${{ inputs.ksu_version_tag }}
+        run: |
+          if [[ ! "$KSU_VERSION_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release workflow requires a KernelSU version tag in vX.Y.Z format, got: $KSU_VERSION_TAG" >&2
+            exit 1
+          fi
+
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          patch="${BASH_REMATCH[3]}"
+          if (( major > 3 || (major == 3 && minor >= 2) )); then
+            release_targets="A15-A16"
+          else
+            release_targets="A13-A16"
+          fi
+
+          echo "version_tag=$KSU_VERSION_TAG" >> "$GITHUB_OUTPUT"
+          echo "version_tuple=$major.$minor.$patch" >> "$GITHUB_OUTPUT"
+          echo "release_targets=$release_targets" >> "$GITHUB_OUTPUT"
+          echo "Release target policy: $release_targets"
+
+  build:
+    name: Build Release Artifacts
+    needs: validate
+    uses: ./.github/workflows/_build-gki-core.yml
+    with:
+      avd_target: all
+      ksu_ref: ${{ needs.validate.outputs.version_tag }}
+      ksu_variant: ${{ inputs.ksu_variant }}
+      arch: ${{ inputs.arch }}
+      release_build: true
+
+  publish:
+    name: Publish Release
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KSU_VARIANT: ${{ inputs.ksu_variant }}
+      KSU_VERSION_TAG: ${{ needs.validate.outputs.version_tag }}
+      RELEASE_TARGETS: ${{ needs.validate.outputs.release_targets }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Release Tag
+        id: tag
+        run: |
+          git fetch --tags --force
+          BASE_TAG="${KSU_VARIANT}-${KSU_VERSION_TAG}"
+          NEW_TAG="$BASE_TAG"
+          REV=2
+
+          while git rev-parse -q --verify "refs/tags/$NEW_TAG" >/dev/null; do
+            NEW_TAG="${BASE_TAG}-r${REV}"
+            REV=$((REV + 1))
+          done
+
+          echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $NEW_TAG"
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-artifacts
+          merge-multiple: false
+
+      - name: Package Release Zips
+        run: |
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y zip
+          fi
+
+          mkdir -p release-assets
+          for dir in downloaded-artifacts/*/; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            (cd "$dir" && zip -r -q -9 "../../release-assets/${name}.zip" .)
+          done
+          ls -la release-assets
+
+      - name: Set Release Body
+        run: |
+          cat > release_body.md << EOF
+          ## AVD GKI Kernels with ${KSU_VARIANT} ${KSU_VERSION_TAG}
+
+          KernelSU project: \`${KSU_VARIANT}\`
+
+          KernelSU version tag: \`${KSU_VERSION_TAG}\`
+
+          Target policy: \`${RELEASE_TARGETS}\`
+
+          Architecture selector: \`${{ inputs.arch }}\`
+
+          Release workflow accepts only explicit \`vX.Y.Z\` KernelSU / KernelSU-Next tags. \`auto\`, branch names, and commit hashes are intentionally reserved for the artifact-only build workflow.
+
+          With target selector \`all\`, v3.1.x and older releases include A13-A16, while v3.2.0+ releases include A15-A16 only.
+
+          For KernelSU v3.2.0+ x86_64 AVD builds, the workflow defaults syscall hardening to off inside the test kernel because Android Emulator does not expose a stable \`-append\` kernel cmdline option.
+          EOF
+
+          echo "" >> release_body.md
+          echo "### Artifacts" >> release_body.md
+          for info in downloaded-artifacts/*/build-info.txt; do
+            [ -f "$info" ] || continue
+            echo "" >> release_body.md
+            echo '```text' >> release_body.md
+            sed 's/^          //' "$info" >> release_body.md
+            echo '```' >> release_body.md
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          body_path: release_body.md
+          draft: false
+          prerelease: ${{ inputs.release_type == 'Pre-Release' }}
+          files: release-assets/*.zip

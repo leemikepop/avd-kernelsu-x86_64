@@ -32,27 +32,34 @@ The following are the pre-configured AVD builds and their respective kernel vers
 
 ---
 
-## Workflow Configurations (`build-gki.yml`)
+## Workflow Configurations
 
-When running the GitHub Action, you will configure:
+There are two user-facing GitHub Actions workflows:
+
+- **Build AVD GKI Kernels** (`build-gki.yml`): artifact-only builds for testing. This workflow accepts `auto`, tags, branches, or commit refs.
+- **Release AVD GKI Kernels** (`release-gki.yml`): GitHub Release publishing. This workflow only accepts explicit KernelSU / KernelSU-Next version tags in `vX.Y.Z` format.
+
+The shared build implementation lives in `_build-gki-core.yml` and is called by both workflows.
+
+### Artifact Builds
 
 | Input | Description |
 | :--- | :--- |
 | **AVD Target** | Select `all` to build the preset set for the selected mode, or select one target such as `a14-api34-6.1`. |
-| **KSU Version Tag** | `auto` uses per-target defaults (`v3.1.0` for A13/A14, `v3.2.0` for A15+). For GitHub Release publishing, set an explicit ref such as `v3.1.0` or `v3.2.0`. |
+| **KSU Ref** | `auto` uses per-target defaults (`v3.1.0` for A13/A14, `v3.2.0` for A15+). You may also provide a tag, branch, or commit ref for testing. |
 | **KSU Variant** | Choose between official `KernelSU` or `KernelSU-Next`. |
 | **Target Architecture** | `x86_64` (for standard Windows/Linux Intel/AMD hosts), `arm64` (for Apple Silicon or ARM64 hosts), or `both`. |
-| **Release Type** | `Actions` uploads workflow artifacts only. `Pre-Release` and `Release` collect all matrix artifacts into a GitHub Release. |
 
 Artifacts include Android/API, kernel version, architecture, Build ID, and KernelSU version in their name, e.g. `dist-A16-API36.0-6.6-x86_64-13070261-v320`. This keeps Android 16 API 36.0 (`6.6`) distinct from Android 16 API 36.1 (`6.12`), and avoids collisions when building both architectures.
 
-### Release Presets
+### Release Builds
 
-Use `Release Type = Pre-Release` or `Release` only with an explicit KernelSU ref:
+Use **Release AVD GKI Kernels** for publishing. Select the KernelSU project and enter a version tag such as `v3.1.0`, `v3.2.0`, or `v3.3.0`.
 
-- KernelSU `v3.1.0`: set `AVD Target = all`, `KSU Version Tag = v3.1.0`; the workflow publishes A13, A14, A15, A16 API 36.0, and A16 API 36.1.
-- KernelSU `v3.2.0`: set `AVD Target = all`, `KSU Version Tag = v3.2.0`; the workflow publishes only A15, A16 API 36.0, and A16 API 36.1.
-- `KSU Version Tag = auto` is intended for Actions artifact testing and is rejected for Release publishing so one GitHub Release does not mix multiple KernelSU refs.
+- KernelSU / KernelSU-Next `v3.1.x` or older: publishes A13, A14, A15, A16 API 36.0, and A16 API 36.1.
+- KernelSU / KernelSU-Next `v3.2.0` or newer: publishes only A15, A16 API 36.0, and A16 API 36.1.
+- `auto`, branches, and commit hashes are intentionally rejected by the release workflow so one GitHub Release maps to one upstream version tag.
+- Release tags use the form `KernelSU-v3.2.0` or `KernelSU-Next-v3.3.0`; reruns append `-r2`, `-r3`, and so on if the base tag already exists.
 
 ---
 
@@ -84,7 +91,7 @@ For manual builds and exact patch commands, see [the manual guide](avd-kernelsu-
 
 ## How to Deploy Your Custom Kernel
 
-1. Run the **Build AVD GKI Kernels with KernelSU** workflow in your forked repo actions tab.
+1. Run the **Build AVD GKI Kernels** workflow in your forked repo actions tab, or download from a published **Release AVD GKI Kernels** run.
 2. Download the compiled zip artifact containing the kernel image (e.g., `bzImage` for x86_64, `Image` or `Image.gz` for arm64) and `build-info.txt`.
 3. Sideload the matching **KernelSU Manager APK** (ensure the version tag matches the KSU version code reported in `build-info.txt`).
 4. Boot your emulator from the command line pointing to the custom kernel:

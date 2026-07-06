@@ -1,0 +1,656 @@
+name: Build AVD GKI Kernels Core
+
+permissions:
+  contents: read
+  actions: read
+
+on:
+  workflow_call:
+    inputs:
+      avd_target:
+        description: 'AVD target to build'
+        required: true
+        type: string
+      ksu_ref:
+        description: 'KernelSU / KernelSU-Next tag, commit, or auto for per-target defaults'
+        required: true
+        type: string
+      ksu_variant:
+        description: 'KernelSU variant'
+        required: true
+        type: string
+      arch:
+        description: 'Target architecture'
+        required: true
+        type: string
+      release_build:
+        description: 'Apply release target filtering and reject auto refs'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  prepare-matrix:
+    name: Prepare Build Matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      target_count: ${{ steps.matrix.outputs.target_count }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Generate Matrix
+        id: matrix
+        env:
+          SELECTED_TARGET: ${{ inputs.avd_target }}
+          SELECTED_ARCH: ${{ inputs.arch }}
+          SELECTED_KSU_REF: ${{ inputs.ksu_ref }}
+          SELECTED_RELEASE_BUILD: ${{ inputs.release_build }}
+        run: |
+          MATRIX_JSON=$(python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          selected_target = os.environ["SELECTED_TARGET"]
+          selected_arch = os.environ["SELECTED_ARCH"]
+          selected_ksu_ref = os.environ["SELECTED_KSU_REF"].strip()
+          selected_release_build = os.environ["SELECTED_RELEASE_BUILD"].lower()
+          publishing_release = selected_release_build == "true"
+
+          def is_auto_ref(ref):
+              return ref.lower() == "auto"
+
+          def parse_semver(ref):
+              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", ref)
+              if not match:
+                  return None
+              return tuple(int(part) for part in match.groups())
+
+          def is_v32_or_newer(ref):
+              version = parse_semver(ref)
+              return version is not None and version >= (3, 2, 0)
+
+          if not selected_ksu_ref:
+              print("ksu_ref cannot be empty", file=sys.stderr)
+              sys.exit(1)
+
+          if publishing_release and is_auto_ref(selected_ksu_ref):
+              print(
+                  "Release builds require an explicit ksu_ref such as v3.1.0 or v3.2.0. "
+                  "Use auto only for Actions artifact test builds.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          with open(".github/avd-targets.json", "r", encoding="utf-8") as f:
+              targets = json.load(f)["include"]
+
+          if selected_target != "all":
+              targets = [target for target in targets if target["id"] == selected_target]
+          elif publishing_release and is_v32_or_newer(selected_ksu_ref):
+              targets = [target for target in targets if target.get("release_ksu_v32_plus", False)]
+
+          if not targets:
+              print(f"No AVD target matched {selected_target}", file=sys.stderr)
+              sys.exit(1)
+
+          if selected_arch == "both":
+              arches = ["x86_64", "arm64"]
+          else:
+              arches = [selected_arch]
+
+          include = []
+          for target in targets:
+              for arch in arches:
+                  item = dict(target)
+                  item["arch"] = arch
+                  if is_auto_ref(selected_ksu_ref):
+                      item["effective_ksu_version"] = target.get("default_ksu_version", "")
+                      item["ksu_ref_source"] = "target-default"
+                  else:
+                      item["effective_ksu_version"] = selected_ksu_ref
+                      item["ksu_ref_source"] = "workflow-input"
+                  if not item["effective_ksu_version"]:
+                      print(f"Missing KernelSU ref for target {target['id']}", file=sys.stderr)
+                      sys.exit(1)
+                  include.append(item)
+
+          print(json.dumps({"include": include}, separators=(",", ":")))
+          PY
+          )
+          TARGET_COUNT=$(MATRIX_JSON="$MATRIX_JSON" python3 - <<'PY'
+          import json
+          import os
+          print(len(json.loads(os.environ["MATRIX_JSON"])["include"]))
+          PY
+          )
+
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          echo "target_count=$TARGET_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Prepared $TARGET_COUNT build target(s)."
+          echo "$MATRIX_JSON"
+
+  build:
+    name: "Build ${{ matrix.id }} ${{ matrix.arch }}"
+    needs: prepare-matrix
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    env:
+      BUILD_ID: ${{ matrix.build_id }}
+      TARGET_ID: ${{ matrix.id }}
+      TARGET_NAME: ${{ matrix.name }}
+      EXPECTED_KERNEL_VERSION: ${{ matrix.kernel_version }}
+      TARGET_ANDROID_VERSION: ${{ matrix.android_version }}
+      TARGET_ANDROID_LABEL: ${{ matrix.android_label }}
+      TARGET_API_LEVEL: ${{ matrix.api_level }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      TARGET_DEFAULT_KSU_VERSION: ${{ matrix.default_ksu_version }}
+      KSU_REF: ${{ matrix.effective_ksu_version }}
+      KSU_REF_SOURCE: ${{ matrix.ksu_ref_source }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Free Disk Space
+        uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_swap: true
+
+      - name: Setup Tools & Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y repo git curl
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          echo "KSU_HAS_INDIRECT_SAFE_CHECK=false" >> "$GITHUB_ENV"
+          echo "KSU_X86_SYSCALL_HARDENING_PATCHED=false" >> "$GITHUB_ENV"
+          echo "KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=false" >> "$GITHUB_ENV"
+          echo "KSU_X86_SYSCALL_CHECK_BYPASSED=false" >> "$GITHUB_ENV"
+
+      - name: Sync Kernel Source
+        run: |
+          mkdir -p kernel
+          cd kernel
+
+          if [ "$TARGET_ARCH" = "x86_64" ]; then
+            CI_TARGET_ARCH="kernel_virt_x86_64"
+          else
+            CI_TARGET_ARCH="kernel_aarch64"
+          fi
+
+          repo init -u https://android.googlesource.com/kernel/manifest --depth=1
+          curl -Lo ".repo/manifests/manifest_${BUILD_ID}.xml" "https://ci.android.com/builds/submitted/${BUILD_ID}/${CI_TARGET_ARCH}/latest/raw/manifest_${BUILD_ID}.xml"
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import xml.etree.ElementTree as ET
+
+          manifest_path = f".repo/manifests/manifest_{os.environ['BUILD_ID']}.xml"
+          tree = ET.parse(manifest_path)
+          root = tree.getroot()
+          changed = False
+
+          def remote_head_exists(repo_name, branch):
+              if not branch:
+                  return False
+              result = subprocess.run(
+                  [
+                      "git",
+                      "ls-remote",
+                      "--exit-code",
+                      "--heads",
+                      f"https://android.googlesource.com/{repo_name}",
+                      f"refs/heads/{branch}",
+                  ],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+              return result.returncode == 0
+
+          for project in root.findall("project"):
+              repo_name = project.get("name")
+              if repo_name != "kernel/common":
+                  continue
+
+              for attr in ("upstream", "dest-branch"):
+                  branch = project.get(attr)
+                  if not branch or branch.startswith("deprecated/"):
+                      continue
+                  deprecated_branch = f"deprecated/{branch}"
+                  if remote_head_exists(repo_name, branch):
+                      continue
+                  if remote_head_exists(repo_name, deprecated_branch):
+                      print(
+                          f"Manifest project {repo_name}: rewriting {attr} "
+                          f"{branch} -> {deprecated_branch}"
+                      )
+                      project.set(attr, deprecated_branch)
+                      changed = True
+
+          if changed:
+              tree.write(manifest_path, encoding="UTF-8", xml_declaration=True)
+          PY
+          repo init -m "manifest_${BUILD_ID}.xml"
+          repo sync -c -j"$(nproc --all)"
+
+      - name: Detect Kernel Metadata
+        id: metadata
+        run: |
+          if [ ! -f "kernel/common/Makefile" ]; then
+            echo "Error: Makefile not found!"
+            exit 1
+          fi
+
+          VERSION=$(grep '^VERSION = ' kernel/common/Makefile | awk '{print $3}')
+          PATCHLEVEL=$(grep '^PATCHLEVEL = ' kernel/common/Makefile | awk '{print $3}')
+          SUBLEVEL=$(grep '^SUBLEVEL = ' kernel/common/Makefile | awk '{print $3}')
+          KERNEL_VERSION="$VERSION.$PATCHLEVEL"
+
+          echo "Detected KERNEL_VERSION: $KERNEL_VERSION"
+          echo "Detected SUBLEVEL: $SUBLEVEL"
+          echo "Expected KERNEL_VERSION: $EXPECTED_KERNEL_VERSION"
+
+          if [ "$KERNEL_VERSION" != "$EXPECTED_KERNEL_VERSION" ]; then
+            echo "Error: detected kernel version does not match target metadata."
+            exit 1
+          fi
+
+          echo "kernel_version=$KERNEL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "sublevel=$SUBLEVEL" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Distribution Name
+        id: dist
+        run: |
+          : "${KSU_REF:?KSU_REF is required}"
+          KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
+          ANDROID_LABEL="$TARGET_ANDROID_LABEL"
+          API_LEVEL="$TARGET_API_LEVEL"
+          ARCH_LABEL="$TARGET_ARCH"
+
+          if [[ "$KSU_REF" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            KSU_VERSION_LABEL="v${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+          else
+            KSU_VERSION_LABEL=$(echo "$KSU_REF" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')
+          fi
+
+          API_LABEL="API$(echo "$API_LEVEL" | sed -E 's/[^0-9A-Za-z._-]+/-/g; s/^-+//; s/-+$//')"
+          DIST_NAME="dist-${ANDROID_LABEL}-${API_LABEL}-${KERNEL_VERSION}-${ARCH_LABEL}-${BUILD_ID}-${KSU_VERSION_LABEL}"
+          ARTIFACT_NAME="$DIST_NAME"
+
+          echo "Resolved DIST_NAME: $DIST_NAME"
+          echo "Resolved ARTIFACT_NAME: $ARTIFACT_NAME"
+          echo "Resolved KSU_REF: $KSU_REF ($KSU_REF_SOURCE)"
+          echo "KSU_VERSION_LABEL=$KSU_VERSION_LABEL" >> "$GITHUB_ENV"
+          echo "ANDROID_LABEL=$ANDROID_LABEL" >> "$GITHUB_ENV"
+          echo "API_LEVEL=$API_LEVEL" >> "$GITHUB_ENV"
+          echo "API_LABEL=$API_LABEL" >> "$GITHUB_ENV"
+          echo "DIST_NAME=$DIST_NAME" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> "$GITHUB_ENV"
+          echo "dist_name=$DIST_NAME" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Apply glibc 2.38 Compatibility Fix
+        run: |
+          SUBLEVEL="${{ steps.metadata.outputs.sublevel }}"
+          KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
+          ANDROID_VERSION="$TARGET_ANDROID_VERSION"
+
+          if [[ "$ANDROID_VERSION" == "android14" && "$KERNEL_VERSION" == "6.1" && $SUBLEVEL -le 43 ]]; then
+            GLIBC_VERSION=$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')
+            if [ "$(printf '%s\n' "2.38" "$GLIBC_VERSION" | sort -V | head -n1)" = "2.38" ]; then
+              echo "Applying glibc 2.38 compatibility fix for sublevel $SUBLEVEL..."
+              cd "kernel/common"
+              sed -i '/\$(Q)\$(MAKE) -C \$(SUBCMD_SRC) OUTPUT=\$(abspath \$(dir \$@))\/ \$(abspath \$@)/s//$(Q)$(MAKE) -C $(SUBCMD_SRC) EXTRA_CFLAGS="$(CFLAGS)" OUTPUT=$(abspath $(dir $@))\/ $(abspath $@)/' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
+            fi
+          fi
+
+      - name: Fix Less Than 6.6.50 Builds
+        if: ${{ steps.metadata.outputs.kernel_version == '6.6' }}
+        run: |
+          cd kernel/common
+          if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
+            sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace/hooks/fs.h>' ./fs/namespace.c
+          fi
+
+      - name: Integrate KernelSU
+        run: |
+          cd kernel
+
+          case "${{ inputs.ksu_variant }}" in
+            KernelSU)
+              KSU_REPO_URL="https://github.com/tiann/KernelSU.git"
+              KSU_REPO_DIR="KernelSU"
+              ;;
+            KernelSU-Next)
+              KSU_REPO_URL="https://github.com/KernelSU-Next/KernelSU-Next.git"
+              KSU_REPO_DIR="KernelSU-Next"
+              ;;
+            *)
+              echo "Unsupported KernelSU variant: ${{ inputs.ksu_variant }}"
+              exit 1
+              ;;
+          esac
+
+          git clone "$KSU_REPO_URL" "$KSU_REPO_DIR"
+          "./$KSU_REPO_DIR/kernel/setup.sh" "$KSU_REF"
+
+          rm -rf common/drivers/kernelsu
+          cp -r "$KSU_REPO_DIR/kernel" common/drivers/kernelsu
+
+          if [ -d "$KSU_REPO_DIR/uapi" ] && [ -L "common/drivers/kernelsu/include/uapi" ]; then
+            rm -f common/drivers/kernelsu/include/uapi
+            cp -r "$KSU_REPO_DIR/uapi" common/drivers/kernelsu/include/uapi
+          fi
+
+          if [ -f "common/drivers/kernelsu/feature/sulog.h" ]; then
+            if grep -Eq '__init|__exit' common/drivers/kernelsu/feature/sulog.h \
+              && ! grep -qxF '#include <linux/init.h>' common/drivers/kernelsu/feature/sulog.h; then
+              sed -i '/#include <linux\/types.h>/a #include <linux/init.h>' common/drivers/kernelsu/feature/sulog.h
+            fi
+          fi
+
+          if [ "$TARGET_ARCH" = "x86_64" ]; then
+            if [ -f "common/drivers/kernelsu/syscall_hook_manager.c" ]; then
+              if ! grep -qxF '#include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c; then
+                sed -i '/#include <linux\/tracepoint.h>/a #include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c
+              fi
+              if ! grep -qxF '#include <asm/compat.h>' common/drivers/kernelsu/syscall_hook_manager.c; then
+                sed -i '/#include <asm\/syscall.h>/a #if defined(__x86_64__)\n#include <asm/compat.h>\n#endif' common/drivers/kernelsu/syscall_hook_manager.c
+              fi
+            fi
+
+            if [ -f "common/drivers/kernelsu/hook/patch_memory.h" ]; then
+              if ! grep -qxF '#include <linux/bug.h>' common/drivers/kernelsu/hook/patch_memory.h; then
+                sed -i '/#include <linux\/types.h>/a #include <linux/bug.h>' common/drivers/kernelsu/hook/patch_memory.h
+              fi
+              sed -i 's|"asm/patching.h"|"asm/text-patching.h"|g' common/drivers/kernelsu/hook/patch_memory.h
+            fi
+          fi
+
+          KSU_HAS_INDIRECT_SAFE_CHECK=false
+          TAG_OR_COMMIT="$KSU_REF"
+          if [[ "$TAG_OR_COMMIT" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            KSU_MAJOR="${BASH_REMATCH[1]}"
+            KSU_MINOR="${BASH_REMATCH[2]}"
+            if (( KSU_MAJOR > 3 || (KSU_MAJOR == 3 && KSU_MINOR >= 2) )); then
+              KSU_HAS_INDIRECT_SAFE_CHECK=true
+            fi
+          fi
+
+          cd "$KSU_REPO_DIR"
+          if git cat-file -e 40e8fb7616bfd875babb45364f5262657538327a 2>/dev/null; then
+            if git merge-base --is-ancestor 40e8fb7616bfd875babb45364f5262657538327a HEAD 2>/dev/null; then
+              KSU_HAS_INDIRECT_SAFE_CHECK=true
+            fi
+          fi
+
+          KSU_GIT_VERSION=$(git rev-list --count HEAD)
+          KSU_VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null || printf '%s' "$KSU_REF")
+          BASE_OFFSET=10000
+          if grep -q "30000" kernel/Kbuild 2>/dev/null || grep -q "30000" kernel/Makefile 2>/dev/null; then
+            BASE_OFFSET=30000
+          elif grep -q "10000" kernel/Kbuild 2>/dev/null || grep -q "10000" kernel/Makefile 2>/dev/null; then
+            BASE_OFFSET=10000
+          fi
+          KSU_VERSION=$((BASE_OFFSET + KSU_GIT_VERSION))
+          echo "Calculated KSU_VERSION: $KSU_VERSION"
+          echo "Resolved KSU_VERSION_TAG: $KSU_VERSION_TAG"
+          echo "KSU_VERSION=$KSU_VERSION" >> "$GITHUB_ENV"
+          echo "KSU_VERSION_TAG=$KSU_VERSION_TAG" >> "$GITHUB_ENV"
+          cd ..
+
+          for f in common/drivers/kernelsu/core/init.c common/drivers/kernelsu/ksu.c; do
+            if [ -f "$f" ] && grep -q 'X86_FEATURE_INDIRECT_SAFE' "$f"; then
+              KSU_HAS_INDIRECT_SAFE_CHECK=true
+            fi
+          done
+
+          KSU_X86_SYSCALL_CHECK_BYPASSED=false
+          KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
+          SHOULD_BYPASS=false
+          if [ "$TARGET_ARCH" = "x86_64" ] && [ "$KSU_HAS_INDIRECT_SAFE_CHECK" = "true" ]; then
+            case "$KERNEL_VERSION" in
+              5.15|6.1)
+                SHOULD_BYPASS=true
+                ;;
+              6.6|6.12|6.18)
+                SHOULD_BYPASS=false
+                ;;
+              *)
+                echo "Unsupported x86_64 kernel version for KernelSU syscall check handling: $KERNEL_VERSION"
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [ "$SHOULD_BYPASS" = "true" ]; then
+            echo "Patching KernelSU v3.2.0+ x86_64 syscall check for older syscall-table GKI ($KERNEL_VERSION)..."
+            for f in common/drivers/kernelsu/core/init.c common/drivers/kernelsu/ksu.c; do
+              if [ -f "$f" ] && grep -q 'X86_FEATURE_INDIRECT_SAFE' "$f"; then
+                sed -i '/#ifndef X86_FEATURE_INDIRECT_SAFE/,/#endif/d' "$f"
+                sed -i '/if (!boot_cpu_has(X86_FEATURE_INDIRECT_SAFE)) {/,/}/d' "$f"
+                KSU_X86_SYSCALL_CHECK_BYPASSED=true
+              fi
+            done
+            if [ "$KSU_X86_SYSCALL_CHECK_BYPASSED" != "true" ]; then
+              echo "Expected to bypass KernelSU x86_64 syscall check, but no supported KernelSU init file was found."
+              exit 1
+            fi
+          else
+            echo "Skipping KernelSU x86_64 syscall check bypass (KSU_HAS_INDIRECT_SAFE_CHECK=$KSU_HAS_INDIRECT_SAFE_CHECK, kernel=$KERNEL_VERSION)"
+          fi
+          echo "KSU_HAS_INDIRECT_SAFE_CHECK=$KSU_HAS_INDIRECT_SAFE_CHECK" >> "$GITHUB_ENV"
+          echo "KSU_X86_SYSCALL_CHECK_BYPASSED=$KSU_X86_SYSCALL_CHECK_BYPASSED" >> "$GITHUB_ENV"
+
+          for f in common/drivers/kernelsu/Makefile common/drivers/kernelsu/Kbuild; do
+            if [ -f "$f" ]; then
+              sed -i "s/ccflags-y += -DKSU_VERSION=16/ccflags-y += -DKSU_VERSION=$KSU_VERSION/g" "$f"
+              sed -i "s/KSU_VERSION := 16/KSU_VERSION := $KSU_VERSION/g" "$f"
+              sed -i "s/KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := $KSU_VERSION/g" "$f"
+              KSU_VERSION_TAG_SED=$(printf '%s' "$KSU_VERSION_TAG" | sed -e 's/[\/&]/\\&/g')
+              sed -i "s/KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := $KSU_VERSION_TAG_SED/g" "$f"
+            fi
+          done
+
+      - name: Apply x86_64 Syscall Hardening Patches
+        if: ${{ matrix.arch == 'x86_64' }}
+        run: |
+          if [ "${KSU_HAS_INDIRECT_SAFE_CHECK:-false}" != "true" ]; then
+            echo "KernelSU ref does not use X86_FEATURE_INDIRECT_SAFE checks; skipping x86_64 syscall hardening patches."
+            echo "KSU_X86_SYSCALL_HARDENING_PATCHED=false" >> "$GITHUB_ENV"
+            echo "KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          cd kernel/common
+
+          KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
+          KSU_X86_SYSCALL_HARDENING_PATCHED=false
+          KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=false
+          PATCH_URLS=()
+          PATCH_MODE=standard
+
+          case "$KERNEL_VERSION" in
+            5.15|6.1)
+              echo "Kernel $KERNEL_VERSION does not need KernelSU x86_64 syscall hardening patches."
+              ;;
+            6.6)
+              PATCH_URLS=(
+                "https://github.com/android-generic/kernel_common/commit/fe9a9b4c320577c30e1f22d04039e414c6a3cdec.patch"
+                "https://github.com/android-generic/kernel_common/commit/df772e99e392f24b395ceaf7b26974e3e4828ee9.patch"
+              )
+              ;;
+            6.12)
+              PATCH_MODE=android16_6_12
+              PATCH_URLS=(
+                "https://github.com/android-generic/kernel-zenith/commit/dd2c602268fdc81f4d3b662f6a15142ac0ec7bcd.patch"
+                "https://github.com/android-generic/kernel-zenith/commit/7d99237ae5da61c19447138da3282ae37d43857b.patch"
+              )
+              ;;
+            6.18)
+              PATCH_URLS=(
+                "https://github.com/android-generic/kernel-zenith/commit/40b1c323d1ad29c86e041d665c7f089b9a3ccfb5.patch"
+                "https://github.com/android-generic/kernel-zenith/commit/f5813e10b7630e1ccd86fc2c4cf30eef60b64a82.patch"
+              )
+              ;;
+            *)
+              echo "No KernelSU x86_64 syscall hardening patch is configured for kernel $KERNEL_VERSION"
+              exit 1
+              ;;
+          esac
+
+          if [ "${#PATCH_URLS[@]}" -gt 0 ]; then
+            if grep -q 'X86_FEATURE_INDIRECT_SAFE' arch/x86/include/asm/cpufeatures.h \
+              && grep -q 'syscall_hardening' arch/x86/kernel/cpu/common.c \
+              && grep -q 'sys_call_table\[unr\]' arch/x86/entry/common.c; then
+              echo "KernelSU x86_64 syscall hardening patches are already present; skipping."
+            elif [ "$PATCH_MODE" = "android16_6_12" ]; then
+              echo "Applying Android 16 6.12-compatible KernelSU x86_64 syscall hardening patches..."
+
+              if ! grep -q 'X86_FEATURE_INDIRECT_SAFE' arch/x86/include/asm/cpufeatures.h; then
+                sed -i '/X86_FEATURE_INDIRECT_THUNK_ITS/a #define X86_FEATURE_INDIRECT_SAFE\t(21*32 + 7) /* "" Indirect branches can be used for syscalls */' arch/x86/include/asm/cpufeatures.h
+              fi
+              if ! grep -q 'X86_FEATURE_INDIRECT_SAFE' arch/x86/include/asm/cpufeatures.h; then
+                echo "Failed to add X86_FEATURE_INDIRECT_SAFE to cpufeatures.h"
+                exit 1
+              fi
+
+              if ! grep -q 'cpu_show_syscall_hardening' include/linux/cpu.h; then
+                sed -i '/extern ssize_t cpu_show_tsa/i #if defined(CONFIG_X86) || defined(CONFIG_X86_64)\nextern ssize_t cpu_show_syscall_hardening(struct device *dev,\n\t\t\t\t\t       struct device_attribute *attr, char *buf);\n#endif\n' include/linux/cpu.h
+              fi
+              if ! grep -q 'cpu_show_syscall_hardening' include/linux/cpu.h; then
+                echo "Failed to add cpu_show_syscall_hardening declaration to include/linux/cpu.h"
+                exit 1
+              fi
+
+              curl -L "${PATCH_URLS[0]}" -o /tmp/ksu-x86-syscall-hardening-1.patch
+              git apply --check --whitespace=fix \
+                --exclude=arch/x86/include/asm/cpufeatures.h \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                /tmp/ksu-x86-syscall-hardening-1.patch
+              git apply --whitespace=fix \
+                --exclude=arch/x86/include/asm/cpufeatures.h \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                /tmp/ksu-x86-syscall-hardening-1.patch
+
+              curl -L "${PATCH_URLS[1]}" -o /tmp/ksu-x86-syscall-hardening-2.patch
+              git apply --check --whitespace=fix \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                --exclude=include/linux/cpu.h \
+                /tmp/ksu-x86-syscall-hardening-2.patch
+              git apply --whitespace=fix \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                --exclude=include/linux/cpu.h \
+                /tmp/ksu-x86-syscall-hardening-2.patch
+            else
+              for patch_url in "${PATCH_URLS[@]}"; do
+                echo "Applying $patch_url"
+                curl -L "$patch_url" -o /tmp/ksu-x86-syscall-hardening.patch
+                git apply --check --whitespace=fix /tmp/ksu-x86-syscall-hardening.patch
+                git apply --whitespace=fix /tmp/ksu-x86-syscall-hardening.patch
+              done
+            fi
+
+            if grep -q 'syscall_hardening __ro_after_init = SYSCALL_HARDENING_ON;' arch/x86/kernel/cpu/common.c; then
+              echo "Defaulting syscall_hardening to off for Android Emulator, which does not expose a stable -append kernel cmdline option."
+              sed -i 's/syscall_hardening __ro_after_init = SYSCALL_HARDENING_ON;/syscall_hardening __ro_after_init = SYSCALL_HARDENING_OFF;/' arch/x86/kernel/cpu/common.c
+            fi
+            if ! grep -q 'syscall_hardening __ro_after_init = SYSCALL_HARDENING_OFF;' arch/x86/kernel/cpu/common.c; then
+              echo "Expected syscall_hardening to default to off after x86_64 hardening patch handling."
+              exit 1
+            fi
+
+            git diff --check -- arch/x86 include/linux/cpu.h drivers/base/cpu.c
+            KSU_X86_SYSCALL_HARDENING_PATCHED=true
+            KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=true
+          fi
+
+          echo "KSU_X86_SYSCALL_HARDENING_PATCHED=$KSU_X86_SYSCALL_HARDENING_PATCHED" >> "$GITHUB_ENV"
+          echo "KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF=$KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF" >> "$GITHUB_ENV"
+
+      - name: Build GKI Kernel
+        run: |
+          cd kernel
+
+          run_dist_target() {
+            target="$1"
+            dest="$2"
+            help_output=$(tools/bazel run --config=fast --lto=none "$target" -- -h 2>&1 || true)
+            echo "$help_output"
+
+            if grep -q -- '--destdir' <<< "$help_output"; then
+              echo "Detected $target dist argument: --destdir"
+              tools/bazel run --config=fast --lto=none "$target" -- --destdir="$dest"
+            elif grep -q -- '--dist_dir' <<< "$help_output"; then
+              echo "Detected $target dist argument: --dist_dir"
+              tools/bazel run --config=fast --lto=none "$target" -- --dist_dir="$dest"
+            else
+              echo "Unable to detect dist argument for $target. Expected --destdir or --dist_dir in help output."
+              exit 1
+            fi
+          }
+
+          if [ "$TARGET_ARCH" = "x86_64" ]; then
+            run_dist_target //common:kernel_x86_64_dist "${DIST_NAME}/"
+          else
+            run_dist_target //common:kernel_aarch64_dist "${DIST_NAME}/"
+          fi
+
+      - name: Prepare Artifacts
+        run: |
+          mkdir -p output
+          cd "kernel/${DIST_NAME}"
+          if [ "$KSU_X86_SYSCALL_HARDENING_PATCHED" = "true" ] && [ "$KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF" != "true" ]; then
+            REQUIRED_BOOT_ARG="syscall_hardening=off"
+          else
+            REQUIRED_BOOT_ARG="none"
+          fi
+
+          cp bzImage ../../output/ 2>/dev/null || true
+          cp Image ../../output/ 2>/dev/null || true
+          cp Image.gz ../../output/ 2>/dev/null || true
+
+          cat > ../../output/build-info.txt << EOF
+          Target ID: ${TARGET_ID}
+          Target Name: ${TARGET_NAME}
+          Build ID: ${BUILD_ID}
+          Architecture: ${TARGET_ARCH}
+          Distribution Name: ${DIST_NAME}
+          Artifact Name: ${ARTIFACT_NAME}
+          Android Label: ${ANDROID_LABEL}
+          API Level: ${API_LEVEL}
+          Kernel Version: ${{ steps.metadata.outputs.kernel_version }}
+          Kernel Sublevel: ${{ steps.metadata.outputs.sublevel }}
+          KSU Variant: ${{ inputs.ksu_variant }}
+          KSU Requested Ref: ${KSU_REF}
+          KSU Ref Source: ${KSU_REF_SOURCE}
+          KSU Version Label: ${KSU_VERSION_LABEL}
+          KSU Version Code: ${KSU_VERSION}
+          KSU Resolved Tag: ${KSU_VERSION_TAG}
+          KSU Ref Selector: ${{ inputs.ksu_ref }}
+          x86_64 Syscall Hardening Patch Applied: ${KSU_X86_SYSCALL_HARDENING_PATCHED}
+          x86_64 Syscall Hardening Default Off: ${KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF}
+          x86_64 KernelSU Syscall Check Bypassed: ${KSU_X86_SYSCALL_CHECK_BYPASSED}
+          Required Emulator Boot Arg: ${REQUIRED_BOOT_ARG}
+          Build Date: $(date -u)
+          EOF
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.dist.outputs.artifact_name }}
+          path: output/*
+          if-no-files-found: error
+          compression-level: 9
