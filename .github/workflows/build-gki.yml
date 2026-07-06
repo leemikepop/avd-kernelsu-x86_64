@@ -169,6 +169,56 @@ jobs:
 
           repo init -u https://android.googlesource.com/kernel/manifest --depth=1
           curl -Lo ".repo/manifests/manifest_${BUILD_ID}.xml" "https://ci.android.com/builds/submitted/${BUILD_ID}/${CI_TARGET_ARCH}/latest/raw/manifest_${BUILD_ID}.xml"
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import xml.etree.ElementTree as ET
+
+          manifest_path = f".repo/manifests/manifest_{os.environ['BUILD_ID']}.xml"
+          tree = ET.parse(manifest_path)
+          root = tree.getroot()
+          changed = False
+
+          def remote_head_exists(repo_name, branch):
+              if not branch:
+                  return False
+              result = subprocess.run(
+                  [
+                      "git",
+                      "ls-remote",
+                      "--exit-code",
+                      "--heads",
+                      f"https://android.googlesource.com/{repo_name}",
+                      f"refs/heads/{branch}",
+                  ],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+              return result.returncode == 0
+
+          for project in root.findall("project"):
+              repo_name = project.get("name")
+              if repo_name != "kernel/common":
+                  continue
+
+              for attr in ("upstream", "dest-branch"):
+                  branch = project.get(attr)
+                  if not branch or branch.startswith("deprecated/"):
+                      continue
+                  deprecated_branch = f"deprecated/{branch}"
+                  if remote_head_exists(repo_name, branch):
+                      continue
+                  if remote_head_exists(repo_name, deprecated_branch):
+                      print(
+                          f"Manifest project {repo_name}: rewriting {attr} "
+                          f"{branch} -> {deprecated_branch}"
+                      )
+                      project.set(attr, deprecated_branch)
+                      changed = True
+
+          if changed:
+              tree.write(manifest_path, encoding="UTF-8", xml_declaration=True)
+          PY
           repo init -m "manifest_${BUILD_ID}.xml"
           repo sync -c -j"$(nproc --all)"
 
