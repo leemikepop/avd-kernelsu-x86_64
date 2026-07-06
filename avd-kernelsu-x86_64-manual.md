@@ -139,6 +139,7 @@ KSU_REF=v3.1.0
    esac
 
    git clone "$KSU_REPO_URL" "$KSU_REPO_DIR"
+
    ```
 
 2. **執行 setup.sh 初始化設定**：
@@ -146,6 +147,7 @@ KSU_REF=v3.1.0
 
    ```bash
    "./$KSU_REPO_DIR/kernel/setup.sh" "$KSU_REF"
+
    ```
 
 3. **將軟連結替換為實體目錄**：
@@ -163,6 +165,7 @@ KSU_REF=v3.1.0
      rm -f common/drivers/kernelsu/include/uapi
      cp -r "$KSU_REPO_DIR/uapi" common/drivers/kernelsu/include/uapi
    fi
+
    ```
 
 4. **手動修改KSU_VERSION**:
@@ -182,6 +185,7 @@ KSU_REF=v3.1.0
    echo "Calculated KSU_VERSION: $KSU_VERSION"
    echo "Resolved KSU_VERSION_TAG: $KSU_VERSION_TAG"
    cd ..
+
    ```
 
 * 修改 `common/drivers/kernelsu/Kbuild` (新版 KernelSU / KernelSU-Next) 或 `common/drivers/kernelsu/Makefile` (舊版 KernelSU)：
@@ -198,6 +202,7 @@ KSU_REF=v3.1.0
      sed -i "s/KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := $KSU_VERSION/g" "$f"
      sed -i "s/KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := $KSU_VERSION_TAG_SED/g" "$f"
    done
+
    ```
 
    ```makefile
@@ -348,6 +353,8 @@ if ! grep -q 'syscall_hardening __ro_after_init = SYSCALL_HARDENING_OFF;' arch/x
 fi
 
 git diff --check -- arch/x86 include/linux/cpu.h drivers/base/cpu.c
+cd ..
+
 ```
 
 這組 patch 會加入 `X86_FEATURE_INDIRECT_SAFE`，並把 `syscall_hardening` 預設改成 `off`。因此啟動 A15+ AVD 時不需要加 `-append "syscall_hardening=off"`。
@@ -391,9 +398,11 @@ git diff --check -- arch/x86 include/linux/cpu.h drivers/base/cpu.c
 
 </details>
 
-### 2. 編譯 include 相容性修正 (只在遇到對應錯誤時使用)
+### 2. 編譯 include 相容性修正
 
-這一節不是每次都要跑。先編譯一次，遇到對應錯誤時再套對應的小修正；不要把所有修正都當成固定步驟。
+如果測試 **KernelSU v3.2.0+ / x86_64**，建議在編譯前先跑本節的 x86_64 相容性修正。這類版本會編進 `hook/x86_64/patch_memory.c` 與 `syscall_hook.c`，在 Android 15+ / 6.6、6.12 GKI 上常會遇到 header 名稱或隱含宣告差異。
+
+`detect_dist_arg` 會使用 `tools/bazel run ... -h` 偵測 `--destdir` / `--dist_dir`，但 Bazel 在印出 help 前仍會先 build target；如果這裡的 include 錯誤還沒修，`detect_dist_arg` 也會跟著失敗並顯示「無法判斷」。
 
 #### 部分新版 KernelSU-Next `sulog.h` 缺少 `<linux/init.h>`
 
@@ -420,6 +429,8 @@ fi
 ```
 
 #### x86_64 syscall hook / patch memory include 錯誤
+
+在 kernel source root 執行：
 
 ```bash
 if [ -f common/drivers/kernelsu/syscall_hook_manager.c ]; then
@@ -452,6 +463,12 @@ fatal error: 'asm/patching.h' file not found
 BUG_ON implicit declaration
 ```
 
+如果你已經看到下面錯誤，直接回到 kernel source root 跑上面的修正即可，然後重新執行 `detect_dist_arg` / Bazel build：
+
+```text
+drivers/kernelsu/hook/x86_64/../patch_memory.h:15:10: fatal error: 'asm/patching.h' file not found
+```
+
 ---
 
 ## 四、 編譯與部署
@@ -481,10 +498,10 @@ BUG_ON implicit declaration
   VIRT_DIST_ARG="$(detect_dist_arg //common-modules/virtual-device:virtual_device_x86_64_dist)"
 
   # 編譯核心本體 (bzImage)
-  tools/bazel run --config=fast --lto=none //common:kernel_x86_64_dist -- "${DIST_ARG}=out/dist-13070261-A16-API36.0-6.6-x86_64-v310/"
+  tools/bazel run --config=fast --lto=none //common:kernel_x86_64_dist -- "${DIST_ARG}=out/dist-A16-API36.0-6.6-x86_64-13070261-v310/"
 
   # 編譯 AVD 虛擬裝置驅動模組 (*.ko)，這是讓 AVD 擁有網路與音效的關鍵
-  tools/bazel run --config=fast --lto=none //common-modules/virtual-device:virtual_device_x86_64_dist -- "${VIRT_DIST_ARG}=out/dist-13070261-A16-API36.0-6.6-x86_64-v310/"
+  tools/bazel run --config=fast --lto=none //common-modules/virtual-device:virtual_device_x86_64_dist -- "${VIRT_DIST_ARG}=out/dist-A16-API36.0-6.6-x86_64-13070261-v310/"
   ```
 
 1. **替換 AVD 內核**：

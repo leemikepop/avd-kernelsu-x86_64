@@ -44,7 +44,7 @@ When running the GitHub Action, you will configure:
 | **Target Architecture** | `x86_64` (for standard Windows/Linux Intel/AMD hosts), `arm64` (for Apple Silicon or ARM64 hosts), or `both`. |
 | **Release Type** | `Actions` uploads workflow artifacts only. `Pre-Release` and `Release` collect all matrix artifacts into a GitHub Release. |
 
-Artifacts include Build ID, Android/API, kernel version, architecture, and KernelSU version in their name, e.g. `dist-13070261-A16-API36.0-6.6-x86_64-v310`. This keeps Android 16 API 36.0 (`6.6`) distinct from Android 16 API 36.1 (`6.12`), and avoids collisions when building both architectures.
+Artifacts include Android/API, kernel version, architecture, Build ID, and KernelSU version in their name, e.g. `dist-A16-API36.0-6.6-x86_64-13070261-v310`. This keeps Android 16 API 36.0 (`6.6`) distinct from Android 16 API 36.1 (`6.12`), and avoids collisions when building both architectures.
 
 ---
 

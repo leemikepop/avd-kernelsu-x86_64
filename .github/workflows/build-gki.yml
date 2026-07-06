@@ -263,7 +263,7 @@ jobs:
           fi
 
           API_LABEL="API$(echo "$API_LEVEL" | sed -E 's/[^0-9A-Za-z._-]+/-/g; s/^-+//; s/-+$//')"
-          DIST_NAME="dist-${BUILD_ID}-${ANDROID_LABEL}-${API_LABEL}-${KERNEL_VERSION}-${ARCH_LABEL}-${KSU_VERSION_LABEL}"
+          DIST_NAME="dist-${ANDROID_LABEL}-${API_LABEL}-${KERNEL_VERSION}-${ARCH_LABEL}-${BUILD_ID}-${KSU_VERSION_LABEL}"
           ARTIFACT_NAME="$DIST_NAME"
 
           echo "Resolved DIST_NAME: $DIST_NAME"
