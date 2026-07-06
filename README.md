@@ -96,6 +96,12 @@ emulator -avd <Your_AVD_Name> -kernel C:\path\to\your\downloaded\bzImage -no-sna
 
 - You do not need to specify `-ramdisk` because the new kernel is fully compatible with the stock AVD ramdisk.
 
+- For Android 16 API 36.1 with LSPosed/Zygisk, use at least 4096 MB RAM. A 2 GB AVD can make `lspd` abort during ART startup with `Failed to allocate LinearAlloc` / anonymous `mmap(..., 2147479552, ...)` out-of-memory errors:
+
+```powershell
+emulator -avd <Your_AVD_Name> -memory 4096 -kernel C:\path\to\your\downloaded\bzImage -no-snapshot-load -show-kernel
+```
+
 - Do not pass `-append "syscall_hardening=off"` directly to `emulator`; current Android Emulator builds report it as an unknown option.
 
 ---

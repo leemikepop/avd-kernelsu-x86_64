@@ -538,6 +538,24 @@ drivers/kernelsu/hook/x86_64/../patch_memory.h:15:10: fatal error: 'asm/patching
 
   不要直接加 `-append "syscall_hardening=off"`；目前 Android Emulator wrapper 會回報 unknown option。若測試 KernelSU v3.2.0+ 且 A15+ GKI，請在編譯階段照第三章把 `syscall_hardening` 預設改成 `off`。
 
+  如果在 **Android 16 API 36.1 / 6.12** 測試 LSPosed/Zygisk，建議把 AVD RAM 設為至少 **4096 MB**，更穩可以用 **6144 MB**。2 GB RAM 的 AVD 可能讓 LSPosed 的 `lspd` 在 ART 啟動時直接 abort，常見 tombstone 訊息如下：
+
+  ```text
+  Abort message: 'Failed to allocate LinearAlloc: Failed anonymous mmap(0x0, 2147479552, ...): Out of memory.'
+  ```
+
+  可以在啟動時直接指定記憶體：
+
+  ```powershell
+  emulator -avd <avd_name> -memory 4096 -kernel <kernel_path> -no-snapshot-load -show-kernel 2>&1 | Tee-Object -FilePath "<avd_name>.log"
+  ```
+
+  或在 AVD 的 `config.ini` 設定：
+
+  ```ini
+  hw.ramSize=4096
+  ```
+
 ---
 
 ## 五、 常見指令與工具
@@ -569,4 +587,7 @@ drivers/kernelsu/hook/x86_64/../patch_memory.h:15:10: fatal error: 'asm/patching
 
    # 啟動 avd 並使用指定的核心
    emulator -avd <avd_name> -kernel <kernel_path> -no-snapshot-load -show-kernel 2>&1 | Tee-Object -FilePath "<avd_name>.log"
+
+   # Android 16 API 36.1 + LSPosed/Zygisk 建議至少 4096 MB RAM
+   emulator -avd <avd_name> -memory 4096 -kernel <kernel_path> -no-snapshot-load -show-kernel 2>&1 | Tee-Object -FilePath "<avd_name>.log"
    ```
