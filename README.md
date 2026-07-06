@@ -95,3 +95,4 @@ emulator -avd <Your_AVD_Name> -kernel C:\path\to\your\downloaded\bzImage -no-sna
 ## Credits
 
 - Workflow structure and release packaging ideas were inspired by [nzaar9/avd-kernelsu](https://github.com/nzaar9/avd-kernelsu), an AVD KernelSU builder for Android 14/15/16.
+- Early AVD KernelSU build and module compatibility notes were inspired by [5ec1cff's "在 AVD 上使用 KernelSU"](https://5ec1cff.github.io/my-blog/2024/01/16/avd-ksu/).
