@@ -20,10 +20,10 @@ on:
           - 'a16-api36.1-6.12'
         default: 'all'
       ksu_version:
-        description: 'KernelSU / KernelSU-Next Version Tag or Commit (default: v3.1.0; v3.2.0+ is experimental on x86_64 AVD)'
+        description: 'KernelSU / KernelSU-Next tag or commit. Use auto for per-target defaults; Release builds must use an explicit ref.'
         required: true
         type: string
-        default: 'v3.1.0'
+        default: 'auto'
       ksu_variant:
         description: 'KernelSU Variant'
         required: true
@@ -67,20 +67,53 @@ jobs:
         env:
           SELECTED_TARGET: ${{ inputs.avd_target }}
           SELECTED_ARCH: ${{ inputs.arch }}
+          SELECTED_KSU_REF: ${{ inputs.ksu_version }}
+          SELECTED_RELEASE_TYPE: ${{ inputs.release_type }}
         run: |
           MATRIX_JSON=$(python3 - <<'PY'
           import json
           import os
+          import re
           import sys
 
           selected_target = os.environ["SELECTED_TARGET"]
           selected_arch = os.environ["SELECTED_ARCH"]
+          selected_ksu_ref = os.environ["SELECTED_KSU_REF"].strip()
+          selected_release_type = os.environ["SELECTED_RELEASE_TYPE"]
+          publishing_release = selected_release_type != "Actions"
+
+          def is_auto_ref(ref):
+              return ref.lower() == "auto"
+
+          def parse_semver(ref):
+              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", ref)
+              if not match:
+                  return None
+              return tuple(int(part) for part in match.groups())
+
+          def is_v32_or_newer(ref):
+              version = parse_semver(ref)
+              return version is not None and version >= (3, 2, 0)
+
+          if not selected_ksu_ref:
+              print("ksu_version cannot be empty", file=sys.stderr)
+              sys.exit(1)
+
+          if publishing_release and is_auto_ref(selected_ksu_ref):
+              print(
+                  "Release builds require an explicit ksu_version such as v3.1.0 or v3.2.0. "
+                  "Use auto only for Actions artifact test builds.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
 
           with open(".github/avd-targets.json", "r", encoding="utf-8") as f:
               targets = json.load(f)["include"]
 
           if selected_target != "all":
               targets = [target for target in targets if target["id"] == selected_target]
+          elif publishing_release and is_v32_or_newer(selected_ksu_ref):
+              targets = [target for target in targets if target.get("release_ksu_v32_plus", False)]
 
           if not targets:
               print(f"No AVD target matched {selected_target}", file=sys.stderr)
@@ -96,6 +129,15 @@ jobs:
               for arch in arches:
                   item = dict(target)
                   item["arch"] = arch
+                  if is_auto_ref(selected_ksu_ref):
+                      item["effective_ksu_version"] = target.get("default_ksu_version", "")
+                      item["ksu_ref_source"] = "target-default"
+                  else:
+                      item["effective_ksu_version"] = selected_ksu_ref
+                      item["ksu_ref_source"] = "workflow-input"
+                  if not item["effective_ksu_version"]:
+                      print(f"Missing KernelSU ref for target {target['id']}", file=sys.stderr)
+                      sys.exit(1)
                   include.append(item)
 
           print(json.dumps({"include": include}, separators=(",", ":")))
@@ -131,6 +173,9 @@ jobs:
       TARGET_ANDROID_LABEL: ${{ matrix.android_label }}
       TARGET_API_LEVEL: ${{ matrix.api_level }}
       TARGET_ARCH: ${{ matrix.arch }}
+      TARGET_DEFAULT_KSU_VERSION: ${{ matrix.default_ksu_version }}
+      KSU_REF: ${{ matrix.effective_ksu_version }}
+      KSU_REF_SOURCE: ${{ matrix.ksu_ref_source }}
 
     steps:
       - name: Checkout Repository
@@ -250,7 +295,7 @@ jobs:
       - name: Resolve Distribution Name
         id: dist
         run: |
-          KSU_REF="${{ inputs.ksu_version }}"
+          : "${KSU_REF:?KSU_REF is required}"
           KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
           ANDROID_LABEL="$TARGET_ANDROID_LABEL"
           API_LEVEL="$TARGET_API_LEVEL"
@@ -268,6 +313,7 @@ jobs:
 
           echo "Resolved DIST_NAME: $DIST_NAME"
           echo "Resolved ARTIFACT_NAME: $ARTIFACT_NAME"
+          echo "Resolved KSU_REF: $KSU_REF ($KSU_REF_SOURCE)"
           echo "KSU_VERSION_LABEL=$KSU_VERSION_LABEL" >> "$GITHUB_ENV"
           echo "ANDROID_LABEL=$ANDROID_LABEL" >> "$GITHUB_ENV"
           echo "API_LEVEL=$API_LEVEL" >> "$GITHUB_ENV"
@@ -320,7 +366,7 @@ jobs:
           esac
 
           git clone "$KSU_REPO_URL" "$KSU_REPO_DIR"
-          "./$KSU_REPO_DIR/kernel/setup.sh" "${{ inputs.ksu_version }}"
+          "./$KSU_REPO_DIR/kernel/setup.sh" "$KSU_REF"
 
           rm -rf common/drivers/kernelsu
           cp -r "$KSU_REPO_DIR/kernel" common/drivers/kernelsu
@@ -356,7 +402,7 @@ jobs:
           fi
 
           KSU_HAS_INDIRECT_SAFE_CHECK=false
-          TAG_OR_COMMIT="${{ inputs.ksu_version }}"
+          TAG_OR_COMMIT="$KSU_REF"
           if [[ "$TAG_OR_COMMIT" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             KSU_MAJOR="${BASH_REMATCH[1]}"
             KSU_MINOR="${BASH_REMATCH[2]}"
@@ -373,7 +419,7 @@ jobs:
           fi
 
           KSU_GIT_VERSION=$(git rev-list --count HEAD)
-          KSU_VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null || printf '%s' "${{ inputs.ksu_version }}")
+          KSU_VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null || printf '%s' "$KSU_REF")
           BASE_OFFSET=10000
           if grep -q "30000" kernel/Kbuild 2>/dev/null || grep -q "30000" kernel/Makefile 2>/dev/null; then
             BASE_OFFSET=30000
@@ -610,10 +656,12 @@ jobs:
           Kernel Version: ${{ steps.metadata.outputs.kernel_version }}
           Kernel Sublevel: ${{ steps.metadata.outputs.sublevel }}
           KSU Variant: ${{ inputs.ksu_variant }}
+          KSU Requested Ref: ${KSU_REF}
+          KSU Ref Source: ${KSU_REF_SOURCE}
           KSU Version Label: ${KSU_VERSION_LABEL}
           KSU Version Code: ${KSU_VERSION}
           KSU Resolved Tag: ${KSU_VERSION_TAG}
-          KSU Git Version: ${{ inputs.ksu_version }}
+          KSU Ref Selector: ${{ inputs.ksu_version }}
           x86_64 Syscall Hardening Patch Applied: ${KSU_X86_SYSCALL_HARDENING_PATCHED}
           x86_64 Syscall Hardening Default Off: ${KSU_X86_SYSCALL_HARDENING_DEFAULT_OFF}
           x86_64 KernelSU Syscall Check Bypassed: ${KSU_X86_SYSCALL_CHECK_BYPASSED}
@@ -689,9 +737,11 @@ jobs:
           cat > release_body.md << EOF
           ## AVD GKI Kernels with ${{ inputs.ksu_variant }}
 
-          KernelSU ref: \`${{ inputs.ksu_version }}\`
+          KernelSU ref selector: \`${{ inputs.ksu_version }}\`
 
           Built from \`.github/avd-targets.json\` with target selector \`${{ inputs.avd_target }}\` and arch selector \`${{ inputs.arch }}\`.
+
+          For release publishing, \`auto\` is rejected so each GitHub Release maps to one explicit KernelSU ref. With target selector \`all\`, v3.1.x releases include A13-A16, while v3.2.0+ releases include A15-A16 only.
 
           For KernelSU v3.2.0+ x86_64 AVD builds, the workflow defaults syscall hardening to off inside the test kernel because Android Emulator does not expose a stable \`-append\` kernel cmdline option.
           EOF

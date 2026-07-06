@@ -7,7 +7,9 @@
       "android_version": "android13",
       "android_label": "A13",
       "api_level": "33",
-      "kernel_version": "5.15"
+      "kernel_version": "5.15",
+      "default_ksu_version": "v3.1.0",
+      "release_ksu_v32_plus": false
     },
     {
       "id": "a14-api34-6.1",
@@ -16,7 +18,9 @@
       "android_version": "android14",
       "android_label": "A14",
       "api_level": "34",
-      "kernel_version": "6.1"
+      "kernel_version": "6.1",
+      "default_ksu_version": "v3.1.0",
+      "release_ksu_v32_plus": false
     },
     {
       "id": "a15-api35-6.6",
@@ -25,7 +29,9 @@
       "android_version": "android15",
       "android_label": "A15",
       "api_level": "35",
-      "kernel_version": "6.6"
+      "kernel_version": "6.6",
+      "default_ksu_version": "v3.2.0",
+      "release_ksu_v32_plus": true
     },
     {
       "id": "a16-api36.0-6.6",
@@ -34,7 +40,9 @@
       "android_version": "android16",
       "android_label": "A16",
       "api_level": "36.0",
-      "kernel_version": "6.6"
+      "kernel_version": "6.6",
+      "default_ksu_version": "v3.2.0",
+      "release_ksu_v32_plus": true
     },
     {
       "id": "a16-api36.1-6.12",
@@ -43,7 +51,9 @@
       "android_version": "android16",
       "android_label": "A16",
       "api_level": "36.1",
-      "kernel_version": "6.12"
+      "kernel_version": "6.12",
+      "default_ksu_version": "v3.2.0",
+      "release_ksu_v32_plus": true
     }
   ]
 }

@@ -105,18 +105,20 @@
 
 由於 Bazel/Kleaf 採用隔離的沙盒進行編譯，**不能**直接使用 `setup.sh` 預設產生的跨目錄軟連結。必須在執行 `setup.sh` 後，將 KernelSU / KernelSU-Next 的原始碼與 UAPI 檔案以**實體目錄**形式複製到 `common/` 中。
 
-目前建議 AVD x86_64 測試先使用 **KernelSU v3.1.0（含）以下**。從 KernelSU v3.2.0 開始，x86_64 支援改走 PR #3328 的新路徑，會牽涉 `X86_FEATURE_INDIRECT_SAFE`、syscall hardening patch，以及 AVD 開機期間 ksud / sepolicy 載入時機；實測上所有 AVD target 都可能出現 manager 顯示 `not installed` 的問題。v3.1.0 仍是比較穩定的基準版本，等 v3.1.0 確認可用後，再另外測 v3.2.0+。
+目前的版本策略是：**A13/A14 預設使用 KernelSU v3.1.0**，**A15/A16 預設使用 KernelSU v3.2.0**。A13/A14 的 GKI 還在使用 syscall table，v3.1.0 是比較單純的 baseline；A15+ 的 GKI 已改成 switch-case syscall hardening，手動編譯時要搭配第三章把 hardening patch 編進 kernel，並把 `syscall_hardening` 預設改成 `off`。
 
 以下流程同時支援官方 KernelSU 和 KernelSU-Next。請先選擇 variant 與版本：
 
 ```bash
 # 官方 KernelSU 範例：
 KSU_VARIANT=KernelSU
-KSU_REF=v3.1.0
+# A13/A14 使用 v3.1.0；A15/A16 使用 v3.2.0。
+# KSU_REF=v3.1.0
+KSU_REF=v3.2.0
 
-# KernelSU-Next 範例：
-KSU_VARIANT=KernelSU-Next
-KSU_REF=v3.1.0
+# 如果要改用 KernelSU-Next，切換 variant，版本仍依照同樣策略選擇。
+# KSU_VARIANT=KernelSU-Next
+# KSU_REF=v3.2.0
 ```
 
 1. **複製/下載 KernelSU 原始碼**：
@@ -211,20 +213,20 @@ KSU_REF=v3.1.0
 
    # KernelSU-Next: 將 fallback 改成計算出的真實版本號與 tag：
    KSU_VERSION_FALLBACK := <calculated KSU_VERSION>
-   KSU_VERSION_TAG_FALLBACK := v3.1.0
+   KSU_VERSION_TAG_FALLBACK := <resolved KSU_VERSION_TAG>
    ```
 
 ---
 
 ## **(KernelSU v3.2.0+ ONLY)** 三、 套用 x86_64 Syscall Hardening 與 KernelSU 相容修正
 
-這一章只針對 **KernelSU v3.2.0（含）之後**。預設建議使用 **KernelSU v3.1.0（含）以下**，可以跳過本章；只有在你明確要測試 v3.2.0+ 的新版 x86_64 syscall dispatcher 時，才需要看這裡。
+這一章只針對 **KernelSU v3.2.0（含）之後**。A15/A16 預設走這條路徑；A13/A14 預設仍使用 v3.1.0，所以通常可以跳過本章。只有在你明確要把 v3.2.0+ 套到 A13/A14 時，才需要看 older GKI 的 bypass 做法。
 
-從 v3.2.0 開始，KernelSU 的 x86_64 syscall hook 會檢查 kernel 是否提供 `X86_FEATURE_INDIRECT_SAFE`。這是為了搭配新版 x86_64 syscall hardening，但在 AVD 上還會牽涉 early init、ksud 執行時機與 sepolicy domain 是否已經可用；目前實測所有 AVD target 都可能讓 manager 顯示 `not installed`。所以這章的內容是「進階相容修正」，不是建議預設路徑。
+從 v3.2.0 開始，KernelSU 的 x86_64 syscall hook 會檢查 kernel 是否提供 `X86_FEATURE_INDIRECT_SAFE`。A15+ GKI 需要保留這個檢查並套用 kernel patch；A13/A14 的舊 syscall table GKI 則沒有這個 hardening 特徵，若硬要使用 v3.2.0+，才需要移除 KernelSU 端的檢查。
 
 處理方式要看 GKI kernel 的 syscall 實作，不只看 Android 大版本：
 
-| AVD / GKI | syscall 實作 | KernelSU v3.2.0+ 實驗作法 |
+| AVD / GKI | syscall 實作 | KernelSU v3.2.0+ 處理方式 |
 | --- | --- | --- |
 | Android 13 API 33 / `common-android13-5.15` | 還在使用 syscall table | 註解或移除 KernelSU 的 `X86_FEATURE_INDIRECT_SAFE` 檢查 |
 | Android 14 API 34 / `common-android14-6.1` | 還在使用 syscall table | 註解或移除 KernelSU 的 `X86_FEATURE_INDIRECT_SAFE` 檢查 |
@@ -240,7 +242,7 @@ Android 16 不一定等於 kernel 6.12；例如 API 36.0 AVD 仍使用 android15
 
 <details>
 
-適用 `common-android15-6.6`、`common-android16-6.12`，以及之後同樣採用 switch-case syscall hardening 的 x86_64 GKI。這條路徑只給 **KernelSU v3.2.0+** 使用；如果你使用建議的 v3.1.0（含）以下，請不要套這些 patch。
+適用 `common-android15-6.6`、`common-android16-6.12`，以及之後同樣採用 switch-case syscall hardening 的 x86_64 GKI。這條路徑只給 **KernelSU v3.2.0+** 使用；如果你在 A15+ 上刻意改回 v3.1.0（含）以下，請不要套這些 patch。
 
 v3.2.0+ 測試時要**保留 KernelSU 的 `X86_FEATURE_INDIRECT_SAFE` 檢查**，並依 kernel 版本套用對應 patch，讓 kernel 支援 `X86_FEATURE_INDIRECT_SAFE`。Android Emulator 目前沒有穩定的頂層 `-append` kernel cmdline 參數；直接加 `-append "syscall_hardening=off"` 會出現 unknown option。因此 AVD 測試建議在編譯時把 `syscall_hardening` 預設改成 `off`。
 
@@ -365,7 +367,7 @@ cd ..
 
 <details>
 
-適用 `common-android13-5.15` 和 `common-android14-6.1`。這類 kernel 沒有新版 switch-case syscall hardening，不需要套 `X86_FEATURE_INDIRECT_SAFE` kernel patch。使用建議的 v3.1.0（含）以下時也不需要修改這裡；只有使用 KernelSU v3.2.0+ 時，才在整合 KernelSU 之後把 KernelSU 端的檢查註解或移除。
+適用 `common-android13-5.15` 和 `common-android14-6.1`。這類 kernel 沒有新版 switch-case syscall hardening，不需要套 `X86_FEATURE_INDIRECT_SAFE` kernel patch。使用預設的 v3.1.0（含）以下時也不需要修改這裡；只有使用 KernelSU v3.2.0+ 時，才在整合 KernelSU 之後把 KernelSU 端的檢查註解或移除。
 
 編輯 `common/drivers/kernelsu/core/init.c`（部分版本在 `common/drivers/kernelsu/ksu.c`）。
 
@@ -400,7 +402,7 @@ cd ..
 
 ### 2. 編譯 include 相容性修正
 
-如果測試 **KernelSU v3.2.0+ / x86_64**，建議在編譯前先跑本節的 x86_64 相容性修正。這類版本會編進 `hook/x86_64/patch_memory.c` 與 `syscall_hook.c`，在 Android 15+ / 6.6、6.12 GKI 上常會遇到 header 名稱或隱含宣告差異。
+如果使用 **KernelSU v3.2.0+ / x86_64**，建議在編譯前先跑本節的 x86_64 相容性修正。這類版本會編進 `hook/x86_64/patch_memory.c` 與 `syscall_hook.c`，在 Android 15+ / 6.6、6.12 GKI 上常會遇到 header 名稱或隱含宣告差異。
 
 `detect_dist_arg` 會使用 `tools/bazel run ... -h` 偵測 `--destdir` / `--dist_dir`，但 Bazel 在印出 help 前仍會先 build target；如果這裡的 include 錯誤還沒修，`detect_dist_arg` 也會跟著失敗並顯示「無法判斷」。
 
@@ -495,19 +497,43 @@ drivers/kernelsu/hook/x86_64/../patch_memory.h:15:10: fatal error: 'asm/patching
   }
 
   DIST_ARG="$(detect_dist_arg //common:kernel_x86_64_dist)"
-  VIRT_DIST_ARG="$(detect_dist_arg //common-modules/virtual-device:virtual_device_x86_64_dist)"
+  # VIRT_DIST_ARG="$(detect_dist_arg //common-modules/virtual-device:virtual_device_x86_64_dist)"
+
+  : "${KSU_REF:?請先設定 KSU_REF，例如 v3.1.0 或 v3.2.0}"
+
+  BUILD_ID="${BUILD_ID:-xxxxxxxx}"
+  ANDROID_LABEL="${ANDROID_LABEL:-A1x}"
+  API_LEVEL="${API_LEVEL:-3x}"
+  TARGET_ARCH="${TARGET_ARCH:-x86_64}"
+  KERNEL_VERSION="$(awk '/^VERSION =/{v=$3} /^PATCHLEVEL =/{p=$3} END{print v "." p}' common/Makefile)"
+
+  if [[ "$KSU_REF" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    KSU_VERSION_LABEL="v${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+  else
+    KSU_VERSION_LABEL="$(printf '%s' "$KSU_REF" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+  fi
+
+  API_LABEL="API$(printf '%s' "$API_LEVEL" | sed -E 's/[^0-9A-Za-z._-]+/-/g; s/^-+//; s/-+$//')"
+  DIST_NAME="dist-${ANDROID_LABEL}-${API_LABEL}-${KERNEL_VERSION}-${TARGET_ARCH}-${BUILD_ID}-${KSU_VERSION_LABEL}"
+  echo "DIST_NAME=$DIST_NAME"
 
   # 編譯核心本體 (bzImage)
-  tools/bazel run --config=fast --lto=none //common:kernel_x86_64_dist -- "${DIST_ARG}=out/dist-A16-API36.0-6.6-x86_64-13070261-v310/"
+  tools/bazel run --config=fast --lto=none //common:kernel_x86_64_dist -- "${DIST_ARG}=out/${DIST_NAME}/"
 
   # 編譯 AVD 虛擬裝置驅動模組 (*.ko)，這是讓 AVD 擁有網路與音效的關鍵
-  tools/bazel run --config=fast --lto=none //common-modules/virtual-device:virtual_device_x86_64_dist -- "${VIRT_DIST_ARG}=out/dist-A16-API36.0-6.6-x86_64-13070261-v310/"
+  # tools/bazel run --config=fast --lto=none //common-modules/virtual-device:virtual_device_x86_64_dist -- "${VIRT_DIST_ARG}=out/${DIST_NAME}/"
   ```
+
+   GitHub Actions release 對應規則：
+
+   * 發 KernelSU `v3.1.0`：`AVD Target = all`、`KSU Version Tag = v3.1.0`、`Release Type = Release` 或 `Pre-Release`，會一次產出 A13、A14、A15、A16 API 36.0、A16 API 36.1。
+   * 發 KernelSU `v3.2.0`：`AVD Target = all`、`KSU Version Tag = v3.2.0`、`Release Type = Release` 或 `Pre-Release`，release matrix 會自動只保留 A15、A16 API 36.0、A16 API 36.1。
+   * `KSU Version Tag = auto` 只給 Actions artifact 測試用；真正發 GitHub Release 時必須填明確版本，避免同一個 release 混入不同 KernelSU ref。
 
 1. **替換 AVD 內核**：
 
   ```powershell
-  emulator -avd <AVD_NAME> -kernel <path\to\bzImage> -no-snapshot-load -show-kernel 2>&1 | Tee-Object -FilePath "${avd_name}.log"
+  emulator -avd <avd_name> -kernel <kernel_path> -no-snapshot-load -show-kernel 2>&1 | Tee-Object -FilePath "<avd_name>.log"
   ```
 
   不要直接加 `-append "syscall_hardening=off"`；目前 Android Emulator wrapper 會回報 unknown option。若測試 KernelSU v3.2.0+ 且 A15+ GKI，請在編譯階段照第三章把 `syscall_hardening` 預設改成 `off`。
@@ -542,5 +568,5 @@ drivers/kernelsu/hook/x86_64/../patch_memory.h:15:10: fatal error: 'asm/patching
    emulator -avd <avd_name>
 
    # 啟動 avd 並使用指定的核心
-   emulator -avd <avd_name> -kernel <kernel_path> [-ramdisk <ramdisk_path>] -no-snapshot-load -show-kernel 2>&1 | Tee-Object -FilePath "${avd_name}.log"
+   emulator -avd <avd_name> -kernel <kernel_path> -no-snapshot-load -show-kernel 2>&1 | Tee-Object -FilePath "<avd_name>.log"
    ```
