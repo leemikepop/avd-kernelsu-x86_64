@@ -487,10 +487,10 @@ BUG_ON implicit declaration
   tools/bazel run --config=fast --lto=none //common-modules/virtual-device:virtual_device_x86_64_dist -- "${VIRT_DIST_ARG}=out/dist-13070261-A16-API36.0-6.6-x86_64-v310/"
   ```
 
-2. **替換 AVD 內核**：
+1. **替換 AVD 內核**：
 
   ```powershell
-  emulator -avd <AVD_NAME> -kernel <path\to\bzImage> -no-snapshot-load -show-kernel
+  emulator -avd <AVD_NAME> -kernel <path\to\bzImage> -no-snapshot-load -show-kernel 2>&1 | Tee-Object -FilePath "${avd_name}.log"
   ```
 
   不要直接加 `-append "syscall_hardening=off"`；目前 Android Emulator wrapper 會回報 unknown option。若測試 KernelSU v3.2.0+ 且 A15+ GKI，請在編譯階段照第三章把 `syscall_hardening` 預設改成 `off`。
@@ -525,5 +525,5 @@ BUG_ON implicit declaration
    emulator -avd <avd_name>
 
    # 啟動 avd 並使用指定的核心
-   emulator -avd <avd_name> -kernel <kernel_path> [-ramdisk <ramdisk_path>] -no-snapshot-load -show-kernel
+   emulator -avd <avd_name> -kernel <kernel_path> [-ramdisk <ramdisk_path>] -no-snapshot-load -show-kernel 2>&1 | Tee-Object -FilePath "${avd_name}.log"
    ```
