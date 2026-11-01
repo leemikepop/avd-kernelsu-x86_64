@@ -40,6 +40,26 @@ and `patch` refuses kernels that are not in the table. Minimum upstream versions
 
 Requires Python 3.8+ and an x86_64 AVD.
 
+### Get `avd-ksu.py`
+
+`avd-ksu.py` is a single file with no dependencies beyond the Python standard library. Download it
+from the [latest release](../../releases/latest) (every release attaches it), or clone this repository.
+
+```sh
+# macOS / Linux
+curl -LO https://github.com/leemikepop/avd-kernelsu-x86_64/releases/latest/download/avd-ksu.py
+```
+
+```powershell
+# Windows (PowerShell)
+Invoke-WebRequest https://github.com/leemikepop/avd-kernelsu-x86_64/releases/latest/download/avd-ksu.py -OutFile avd-ksu.py
+```
+
+On first use it downloads the `kernelsu.ko` for your AVD's kernel and the `ksud` / `ksuinit` binaries
+for your host from this repository's [Releases](../../releases) (verified against `SHA256SUMS`) and
+caches them in `~/.cache/avd-ksu` (override with `AVD_KSU_CACHE`). Without `--version` it uses the
+newest stable release of the chosen variant: `kernelsu-vX.Y.Z` or `kernelsu-next-vX.Y.Z`.
+
 ### Recommended: a separate patched ramdisk (`--out` + `-ramdisk`)
 
 The SDK's `ramdisk.img` is shared by **every AVD that uses the same system image**. Writing the patched
