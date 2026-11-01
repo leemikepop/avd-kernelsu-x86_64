@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import struct
@@ -109,17 +110,33 @@ def http_json(url):
         return json.load(r)
 
 
+def version_key(ver):
+    """'v3.4.2' -> (3, 4, 2); non-numeric parts sort first."""
+    return tuple(int(p) if p.isdigit() else -1 for p in re.split(r"[.\-]", ver.lstrip("v")))
+
+
 def find_release(variant, version):
+    """The release for an exact version, or the highest non-prerelease version."""
     prefix = f"{variant}-"
-    for rel in http_json(f"https://api.github.com/repos/{REPO}/releases?per_page=50"):
-        tag = rel["tag_name"]
-        if rel.get("draft") or not tag.startswith(prefix):
-            continue
-        ver = tag[len(prefix):]
-        if not ver.startswith("v"):          # "kernelsu-" must not match "kernelsu-next-..."
-            continue
-        if version in (None, ver):
-            return rel
+    candidates = []
+    for page in range(1, 11):
+        rels = http_json(f"https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}")
+        for rel in rels:
+            tag = rel["tag_name"]
+            if rel.get("draft") or not tag.startswith(prefix):
+                continue
+            ver = tag[len(prefix):]
+            if not ver.startswith("v"):          # "kernelsu-" must not match "kernelsu-next-..."
+                continue
+            if version is not None:
+                if ver == version:
+                    return rel
+            elif not rel.get("prerelease"):
+                candidates.append((version_key(ver), rel))
+        if len(rels) < 100:
+            break
+    if candidates:
+        return max(candidates, key=lambda c: c[0])[1]
     die(f"no release for {variant} {version or '(latest)'} in {REPO}")
 
 
@@ -139,7 +156,8 @@ class Assets:
         self.variant = variant
         self.sums = {}
         if "SHA256SUMS" in self.files:
-            for line in self.get("SHA256SUMS").read_text().splitlines():
+            # Always fetched fresh: a release re-published with --clobber changes it.
+            for line in self.get("SHA256SUMS", fresh=True).read_text().splitlines():
                 h, n = line.split(maxsplit=1)
                 self.sums[n.lstrip("*")] = h
 
@@ -149,26 +167,35 @@ class Assets:
                 return n[len(f"ksud-{variant}-"):].split("-")[0]
         die("cannot determine version from --assets-dir; pass --version")
 
-    def get(self, name):
+    def _download(self, name, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"download {name}")
+        tmp = path.with_suffix(path.suffix + ".part")
+        with urllib.request.urlopen(self.files[name], timeout=300) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        tmp.replace(path)
+
+    def _hash_ok(self, name, path):
+        return name not in self.sums or hashlib.sha256(path.read_bytes()).hexdigest() == self.sums[name]
+
+    def get(self, name, fresh=False):
         if name not in self.files:
             die(f"asset {name} not in release (available: {', '.join(sorted(self.files))})")
         if self.local:
             path = self.files[name]
-        else:
-            path = CACHE / self.variant / self.version / name
-            if not path.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                print(f"download {name}")
-                tmp = path.with_suffix(path.suffix + ".part")
-                with urllib.request.urlopen(self.files[name], timeout=300) as r, open(tmp, "wb") as f:
-                    shutil.copyfileobj(r, f)
-                tmp.replace(path)
-        if name in self.sums:
-            h = hashlib.sha256(path.read_bytes()).hexdigest()
-            if h != self.sums[name]:
-                if not self.local:
-                    path.unlink()
+            if not self._hash_ok(name, path):
                 die(f"sha256 mismatch for {name}")
+            return path
+        path = CACHE / self.variant / self.version / name
+        downloaded = fresh or not path.exists()
+        if downloaded:
+            self._download(name, path)
+        if not self._hash_ok(name, path) and not downloaded:
+            # Cached copy from an earlier publish of this release: fetch it again once.
+            self._download(name, path)
+        if not self._hash_ok(name, path):
+            path.unlink()
+            die(f"sha256 mismatch for {name}")
         return path
 
 
