@@ -1,0 +1,4 @@
+# Scripts and patches run inside Linux build containers: keep them LF even on
+# Windows checkouts with core.autocrlf=true (CRLF breaks bash and git apply).
+*.sh    text eol=lf
+*.patch text eol=lf

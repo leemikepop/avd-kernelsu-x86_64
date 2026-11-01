@@ -1,6 +1,6 @@
 --- a/kernel/hook/x86_64/syscall_hook.c
 +++ b/kernel/hook/x86_64/syscall_hook.c
-@@ -215,10 +215,15 @@ static long my_x64_sys_call(const struct pt_regs *regs, unsigned int nr)
+@@ -215,10 +215,15 @@
      return ksu_syscall_table[nr](regs);
  }
  
@@ -19,7 +19,7 @@
  static void *do_syscall_64_patch_addr;
  static char do_syscall_64_orig_insn[14];
  
-@@ -306,13 +311,17 @@ void __init __nocfi ksu_syscall_hook_init(void)
+@@ -308,13 +313,20 @@
  
  #ifdef CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER
      patch_abs_jump("x64_sys_call", &x64_sys_call_patch_addr, my_x64_sys_call, x64_sys_call_patch_orig_insn);
@@ -32,8 +32,11 @@
 -        patch_abs_jump("do_syscall_64", &do_syscall_64_patch_addr, my_do_syscall_64, do_syscall_64_orig_insn);
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0)
 +    // Before 5.16 always patch do_syscall_64 as well: such a kernel may have
-+    // x64_sys_call backported without fb13b11d.
-+    if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0) || !x64_sys_call_patch_addr) {
++    // x64_sys_call backported without fb13b11d. On newer kernels only fall
++    // back when x64_sys_call is missing and x32 is off, because
++    // my_do_syscall_64 does not dispatch x32 syscalls.
++    if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0) ||
++        (!x64_sys_call_patch_addr && !IS_ENABLED(CONFIG_X86_X32_ABI))) {
 +        syscall_enter_from_user_mode_fn = find_kernel_symbol_exact("syscall_enter_from_user_mode");
 +        syscall_exit_to_user_mode_fn = find_kernel_symbol_exact("syscall_exit_to_user_mode");
 +        pr_info("syscall_enter_from_user_mode: 0x%lx, syscall_exit_to_user_mode: 0x%lx\n",
@@ -44,7 +47,7 @@
      }
  #endif
  #endif
-@@ -342,7 +351,7 @@ void __exit ksu_syscall_hook_exit(void)
+@@ -344,7 +356,7 @@
          }
      }
  
