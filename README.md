@@ -126,7 +126,9 @@ Local build (Docker): `scripts/build-target.sh <target> <kernelsu|kernelsu-next>
 1. Add an entry to `.github/avd-targets.json`: `kernel_release` and `build_id` from
    `python avd-ksu.py list`, `kmi`, and `probe_image` (zip name in Google's
    [sys-img repository](https://dl.google.com/android/repository/sys-img/google_apis_playstore/sys-img2-3.xml)).
-2. Run **Build AVD LKMs** for that target and boot-test it.
+2. Run **Build AVD LKMs** for that target and boot-test it on a dedicated test AVD
+   (boot 1 wipes the AVD's user data):
+   `ALLOW_WIPE=1 scripts/boot-test.sh <test-avd> <patched-ramdisk.img> <manager.apk> <package> <out-dir>`.
 
 ## Credits
 

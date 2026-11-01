@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Boot-test a patched ramdisk on an AVD (does not modify the AVD's system image).
-#   boot-test.sh <avd> <patched-ramdisk.img> <manager.apk> <package> <out-dir>
+# Boot-test a patched ramdisk on an AVD. The system image is not modified, but boot 1 uses
+# -wipe-data: the AVD's user data (apps, accounts, /data) is ERASED. Use a dedicated test AVD
+# and set ALLOW_WIPE=1 to confirm.
+#   ALLOW_WIPE=1 boot-test.sh <avd> <patched-ramdisk.img> <manager.apk> <package> <out-dir>
 # Boot 1: module loaded, hooks installed; install + open the manager (installs /data/adb/ksud).
 # Boot 2: ksud post-fs-data/services/boot-completed ran, `su` gives uid 0.
 # Exit 0 only if boot 2 has root. Uses emulator port 5580 (override with PORT=).
@@ -8,7 +10,12 @@
 # in-guest `adb reboot`: Android Emulator 37.2.13 on Windows segfaults/hangs on guest reboot,
 # even with a stock ramdisk.
 set -u
+[ $# -eq 5 ] || { sed -n '2,5p' "$0"; exit 2; }
 AVD=$1; RD=$2; APK=$3; PKG=$4; OUT=$5
+[ "${ALLOW_WIPE:-}" = 1 ] || {
+  echo "refusing to run: boot 1 wipes the user data of AVD '$AVD'. Re-run with ALLOW_WIPE=1." >&2
+  exit 2
+}
 PORT=${PORT:-5580}
 SDK=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$LOCALAPPDATA/Android/Sdk}}
 winpath() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
