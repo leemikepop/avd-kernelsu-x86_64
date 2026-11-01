@@ -136,9 +136,17 @@ Local build (Docker): `scripts/build-target.sh <target> <kernelsu|kernelsu-next>
 
 ### Patches
 
-- `x86_64-do_syscall_64-fallback.patch` (A14 only): the 6.1.23 AVD kernel has neither `x64_sys_call`
-  nor commit fb13b11d, but upstream only falls back to replacing `do_syscall_64` on kernels < 5.16, so
-  the module loads but its syscall hooks never fire. See
+Applied in the order listed in `.github/avd-targets.json`. A patch that upstream has already merged
+applies in reverse and is skipped.
+
+- `x86_64-seccomp-skip.patch` (A13, A14; upstream
+  [tiann/KernelSU#3966](https://github.com/tiann/KernelSU/pull/3966)): the `do_syscall_64`
+  replacement re-read the syscall number even when seccomp had denied the syscall, so the
+  syscall ran anyway. This affects upstream v3.3.0 and v3.3.1 on kernels < 5.16.
+- `x86_64-do_syscall_64-fallback.patch` (A14 only; upstream
+  [tiann/KernelSU#3963](https://github.com/tiann/KernelSU/pull/3963)): the 6.1.23 AVD kernel has
+  neither `x64_sys_call` nor commit fb13b11d, but upstream only falls back to replacing
+  `do_syscall_64` on kernels < 5.16, so the module loads but its syscall hooks never fire. See
   [docs/notes/x86_64-syscall-hook-gap-6.1.md](docs/notes/x86_64-syscall-hook-gap-6.1.md).
 
 ## Adding an AVD kernel
