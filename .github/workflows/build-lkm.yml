@@ -12,9 +12,9 @@ on:
         options: [kernelsu, kernelsu-next]
         default: kernelsu
       ref:
-        description: Upstream tag, branch or commit (e.g. v3.3.1)
+        # No default: KernelSU and KernelSU-Next use different tags (v3.3.1 vs v3.4.2).
+        description: Upstream tag, branch or commit (e.g. v3.3.1 for kernelsu, v3.4.2 for kernelsu-next)
         required: true
-        default: v3.3.1
       target:
         description: Target id from avd-targets.json, or "all"
         default: all
