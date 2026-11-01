@@ -164,3 +164,12 @@ applies in reverse and is skipped.
   x86_64 LKM work in KernelSU [#3562](https://github.com/tiann/KernelSU/pull/3562) / [#3570](https://github.com/tiann/KernelSU/pull/3570).
 - [nzaar9/avd-kernelsu](https://github.com/nzaar9/avd-kernelsu) for early release packaging ideas.
 - DDK images by [Ylarod](https://github.com/Ylarod).
+
+## License
+
+- This repository (scripts, workflows, `avd-ksu.py`, docs) is [Apache-2.0](LICENSE).
+- [`patches/`](patches/) modify KernelSU's `kernel/` directory and are
+  [GPL-2.0-only](patches/LICENSE), like the code they change.
+- Release assets keep their upstream licenses: `*_kernelsu.ko` is GPL-2.0-only, and `ksud` /
+  `ksuinit` are GPL-3.0-or-later. Each release's notes link the exact upstream commit, patches,
+  `kernel/common` commit and build scripts used to build it.

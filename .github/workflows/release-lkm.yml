@@ -74,19 +74,41 @@ jobs:
           cat release/SHA256SUMS
       - name: Release notes
         env:
+          GH_TOKEN: ${{ github.token }}
           V: ${{ inputs.version }}
           VARIANT: ${{ inputs.variant }}
         run: |
+          case "$VARIANT" in
+            kernelsu) UP=tiann/KernelSU; TOOLS="unmodified binaries from the upstream release [$UP@$V](https://github.com/$UP/releases/tag/$V), source" ;;
+            kernelsu-next) UP=KernelSU-Next/KernelSU-Next; TOOLS="built unmodified from" ;;
+          esac
+          UP_SHA=$(gh api "repos/$UP/commits/$V" --jq .sha)
+          REPO="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
           {
             echo "${VARIANT} ${V} LKMs for stock Android Studio x86_64 AVDs, each built against the AVD kernel's exact source."
             echo
-            echo "| Target | Kernel |"
-            echo "| :--- | :--- |"
-            jq -r '.targets[] | "| \(.label) | `\(.kernel_release)` |"' .github/avd-targets.json
+            echo "| Target | Kernel | \`kernel/common\` | Patches |"
+            echo "| :--- | :--- | :--- | :--- |"
+            jq -r --arg v "$VARIANT" '.targets[] | [.id, .label, .kernel_release, ((.patches[$v] // []) | join(" "))] | @tsv' \
+              .github/avd-targets.json |
+            while IFS=$'\t' read -r id label rel patches; do
+              sha=$(sed -n 's/^COMMON_SHA=//p' "artifacts/lkm-$id/$id.env")
+              [ -n "$sha" ] || { echo "::error::no COMMON_SHA for $id" >&2; exit 1; }
+              links=""
+              for p in $patches; do links+="${links:+, }[\`$p\`]($REPO/blob/$GITHUB_SHA/patches/$p)"; done
+              echo "| $label | \`$rel\` | [\`${sha:0:12}\`](https://android.googlesource.com/kernel/common/+/$sha) | ${links:-none} |"
+            done
             echo
             echo "Patch an AVD: \`python avd-ksu.py patch --avd <name> --variant ${VARIANT} --version ${V}\` (see README)."
             echo "Install the matching ${VARIANT} ${V} manager APK from the upstream release."
+            echo
+            echo "### Sources and licenses"
+            echo
+            echo "- \`*_kernelsu.ko\` (GPL-2.0-only): \`kernel/\` of [$UP@$V](https://github.com/$UP/tree/$UP_SHA) (\`${UP_SHA:0:12}\`) plus the patches listed above, built against the listed \`kernel/common\` commit with the AVD kernel's own config by [$GITHUB_REPOSITORY@${GITHUB_SHA:0:7}]($REPO/tree/$GITHUB_SHA)."
+            echo "- \`ksud-*\`, \`ksuinit-x86_64-*\` (GPL-3.0-or-later): $TOOLS [$UP@$V](https://github.com/$UP/tree/$UP_SHA)."
+            echo "- \`avd-ksu.py\`, \`avd-targets.json\`: Apache-2.0, from [$GITHUB_REPOSITORY@${GITHUB_SHA:0:7}]($REPO/tree/$GITHUB_SHA)."
           } > notes.md
+          cat notes.md
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
