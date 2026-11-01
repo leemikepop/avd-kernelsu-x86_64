@@ -25,4 +25,4 @@ docker run --rm \
   -v "$(winpath "$KSU_REPO"):/ksu:ro" \
   -v "$(winpath "$ROOT/patches"):/patches:ro" \
   -v "$(winpath "$ROOT/scripts/build-lkm.sh"):/build-lkm.sh:ro" \
-  "$DDK_IMAGE" bash /build-lkm.sh "$SRC_TGZ" "$KSU_REF" "out-$VARIANT" "${PATCHES[@]}"
+  "$DDK_IMAGE" bash /build-lkm.sh "$SRC_TGZ" "$KSU_REF" "out-$VARIANT" ${PATCHES[@]+"${PATCHES[@]}"}
