@@ -59,7 +59,17 @@ git clone -q --shared --no-checkout /ksu "$W/KernelSU"
 cd "$W/KernelSU"
 git checkout -q --detach "$KSU_SHA"
 echo "   $(git describe --tags --always) ($KSU_SHA), $(git rev-list --count HEAD) commits"
-for p in "${PATCHES[@]}"; do echo "== apply $p"; git apply -v "/patches/$p"; done
+# A patch that upstream has already merged applies in reverse: skip it instead of failing.
+for p in ${PATCHES[@]+"${PATCHES[@]}"}; do
+  if git apply --check "/patches/$p" 2>/dev/null; then
+    echo "== apply $p"; git apply -v "/patches/$p"
+  elif git apply --reverse --check "/patches/$p" 2>/dev/null; then
+    echo "== skip $p (already in $KSU_REF)"
+  else
+    echo "!! $p applies neither forward nor in reverse to $KSU_REF; update the patch or avd-targets.json"
+    git apply -v "/patches/$p"; exit 1
+  fi
+done
 
 cd kernel
 make -C "$KDIR" M="$PWD" src="$PWD" -j"$(nproc)" modules \
