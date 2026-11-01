@@ -1,59 +1,83 @@
 {
-  "include": [
+  "ddk_release": "20260828",
+  "image_base_url": "https://dl.google.com/android/repository/sys-img/google_apis_playstore/",
+  "targets": [
     {
       "id": "a13-api33-5.15",
-      "name": "Android 13 API 33 5.15",
-      "build_id": "10871489",
-      "android_version": "android13",
-      "android_label": "A13",
+      "label": "Android 13 (API 33)",
       "api_level": "33",
-      "kernel_version": "5.15",
-      "default_ksu_version": "v3.1.0",
-      "release_ksu_v32_plus": false
+      "kmi": "android13-5.15",
+      "build_id": "10871489",
+      "kernel_release": "5.15.119-android13-8-00034-gd34029c8258b-ab10871489",
+      "probe_image": "x86_64-33_r09.zip",
+      "patches": {}
     },
     {
       "id": "a14-api34-6.1",
-      "name": "Android 14 API 34 6.1",
-      "build_id": "9964412",
-      "android_version": "android14",
-      "android_label": "A14",
+      "label": "Android 14 (API 34)",
       "api_level": "34",
-      "kernel_version": "6.1",
-      "default_ksu_version": "v3.1.0",
-      "release_ksu_v32_plus": false
+      "kmi": "android14-6.1",
+      "build_id": "9964412",
+      "kernel_release": "6.1.23-android14-4-00257-g7e35917775b8-ab9964412",
+      "probe_image": "x86_64-34_r14.zip",
+      "patches": {
+        "kernelsu": [
+          "kernelsu/x86_64-do_syscall_64-fallback.patch"
+        ],
+        "kernelsu-next": [
+          "kernelsu-next/x86_64-do_syscall_64-fallback.patch"
+        ]
+      }
     },
     {
       "id": "a15-api35-6.6",
-      "name": "Android 15 API 35 6.6",
-      "build_id": "11987101",
-      "android_version": "android15",
-      "android_label": "A15",
+      "label": "Android 15 (API 35)",
       "api_level": "35",
-      "kernel_version": "6.6",
-      "default_ksu_version": "v3.2.0",
-      "release_ksu_v32_plus": true
+      "kmi": "android15-6.6",
+      "build_id": "11987101",
+      "kernel_release": "6.6.30-android15-8-gdd9c02ccfe27-ab11987101",
+      "probe_image": "x86_64-35_r09.zip",
+      "patches": {}
     },
     {
       "id": "a16-api36.0-6.6",
-      "name": "Android 16 API 36.0 6.6",
+      "label": "Android 16 (API 36.0)",
+      "api_level": "36",
+      "kmi": "android15-6.6",
       "build_id": "13070261",
-      "android_version": "android16",
-      "android_label": "A16",
-      "api_level": "36.0",
-      "kernel_version": "6.6",
-      "default_ksu_version": "v3.2.0",
-      "release_ksu_v32_plus": true
+      "kernel_release": "6.6.66-android15-8-gb66429556fb8-ab13070261",
+      "probe_image": "x86_64-36_r07.zip",
+      "patches": {}
     },
     {
       "id": "a16-api36.1-6.12",
-      "name": "Android 16 API 36.1 6.12",
-      "build_id": "13996879",
-      "android_version": "android16",
-      "android_label": "A16",
+      "label": "Android 16 QPR (API 36.1)",
       "api_level": "36.1",
-      "kernel_version": "6.12",
-      "default_ksu_version": "v3.2.0",
-      "release_ksu_v32_plus": true
+      "kmi": "android16-6.12",
+      "build_id": "13996879",
+      "kernel_release": "6.12.38-android16-5-gbb9513914902-ab13996879",
+      "probe_image": "x86_64-36.1_r04.zip",
+      "patches": {}
+    },
+    {
+      "id": "a17-api37.0-6.12",
+      "label": "Android 17 (API 37.0; also API 37.2 16 KB)",
+      "api_level": "37.0",
+      "kmi": "android16-6.12",
+      "build_id": "16167562",
+      "kernel_release": "6.12.81-android16-6-g4f69fc7b210c-ab16167562",
+      "probe_image": "x86_64-37.0_r08.zip",
+      "patches": {}
+    },
+    {
+      "id": "a17-api37.1-6.12",
+      "label": "Android 17 (API 37.1, 16 KB)",
+      "api_level": "37.1",
+      "kmi": "android16-6.12",
+      "build_id": "15053784",
+      "kernel_release": "6.12.69-android16-6-g214d1615c480-ab15053784",
+      "probe_image": "x86_64-playstore-ps16k-37.1_r09.zip",
+      "patches": {}
     }
   ]
 }
