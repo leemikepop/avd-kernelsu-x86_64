@@ -61,7 +61,7 @@ x86_64 LKM（`CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER`）要讓 KernelSU 的 `ks
 行為變化：
 
 - **有 `x64_sys_call` 的 kernel**（A15 6.6.30、A16 6.6.66、A16.1 6.12.38）：不變，不會走到 fallback。
-- **A13 5.15**：有一點不同。上游的寫法是兩個都 patch，套用 patch 後只有在 `x64_sys_call` 不存在時才 patch `do_syscall_64`。A13 5.15.119 本來就沒有 `x64_sys_call`，所以實際行為不變。
+- **A13 5.15**：不變。5.16 以下仍然兩個都 patch，跟上游原本的行為一樣。（早期的 patch 曾經改成「`x64_sys_call` 失敗才 patch」，review 後改回來。）
 
 修正後 A14 的 log：
 
@@ -104,7 +104,7 @@ ksud 的 post-fs-data、services、boot-completed 三個階段都以 exit 0 結�
 改法：
 
 - 三處 `#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)` 都改成 `< KERNEL_VERSION(6, 7, 0)`。
-- init 時改成只在 `x64_sys_call` patch 失敗時，才替換 `do_syscall_64`。
+- init 時，5.16 以上只在 `x64_sys_call` patch 失敗時才替換 `do_syscall_64`；5.16 以下維持原本的行為，兩個都 patch，因為這類 kernel 可能 backport 了 `x64_sys_call`，卻沒有 fb13b11d。（2026-11-01 依 review 意見補上，PR 的第 2 個 commit。）
 - 註解說明：缺 `x64_sys_call` 的 kernel 可能也缺 fb13b11d（兩者都在 6.9 進 mainline）。限制在 `< 6.7`，是因為 6.7 起 `do_syscall_64` 回傳 `bool`。
 - 6.7、6.8 沒有 `x64_sys_call` 的 kernel 不在支援範圍內，行為和 patch 前一樣。
 
