@@ -22,10 +22,10 @@
       "probe_image": "x86_64-34_r14.zip",
       "patches": {
         "kernelsu": [
-          "kernelsu/x86_64-do_syscall_64-fallback.patch"
+          "x86_64-do_syscall_64-fallback.patch"
         ],
         "kernelsu-next": [
-          "kernelsu-next/x86_64-do_syscall_64-fallback.patch"
+          "x86_64-do_syscall_64-fallback.patch"
         ]
       }
     },
