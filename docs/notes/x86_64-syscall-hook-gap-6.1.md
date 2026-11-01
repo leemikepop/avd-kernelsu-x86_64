@@ -47,10 +47,9 @@ x86_64 LKM（`CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER`）要讓 KernelSU 的 `ks
 
 | 檔案 | 適用版本 |
 | :--- | :--- |
-| `patches/kernelsu/x86_64-do_syscall_64-fallback.patch` | KernelSU v3.3.1 / main |
-| `patches/kernelsu-next/x86_64-do_syscall_64-fallback.patch` | KernelSU-Next v3.4.2 / dev |
+| `patches/x86_64-do_syscall_64-fallback.patch` | KernelSU v3.3.x / main，KernelSU-Next v3.4.x / dev（同一份，KernelSU-Next 只有行號位移） |
 
-（最早驗證的版本是完全拿掉版本 gate；後來改成下方的 `< 6.7` 版本，兩個 patch 目錄現在放的都是 `< 6.7` 版。）
+（最早驗證的版本是完全拿掉版本 gate；後來改成下方的 `< 6.7` 版本。）
 
 做法：
 
@@ -99,7 +98,7 @@ ksud 的 post-fs-data、services、boot-completed 三個階段都以 exit 0 結�
 
 ## 上游 PR 候選版本（< 6.7 gate）
 
-`patches/kernelsu/x86_64-do_syscall_64-fallback.patch` 對 KernelSU main（bec9c134）製作，已送上游 [tiann/KernelSU#3963](https://github.com/tiann/KernelSU/pull/3963)。這個檔案在 v3.3.1 和 main 上內容相同，KernelSU-Next dev 也能套上（只有行號位移）。它取代先前的 `< 6.9` 版本。
+`patches/x86_64-do_syscall_64-fallback.patch` 對 KernelSU main（bec9c134）製作，已送上游 [tiann/KernelSU#3963](https://github.com/tiann/KernelSU/pull/3963)。這個檔案在 v3.3.1 和 main 上內容相同，KernelSU-Next dev 也能套上（只有行號位移）。它取代先前的 `< 6.9` 版本。
 
 改法：
 

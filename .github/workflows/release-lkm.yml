@@ -94,8 +94,13 @@ jobs:
         run: |
           flags=(); [ "${{ inputs.prerelease }}" = true ] && flags+=(--prerelease)
           if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-publish: drop assets this run no longer produces (e.g. a removed or renamed
+            # target), so nothing outside SHA256SUMS stays attached.
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while IFS= read -r n; do
+              [ -e "release/$n" ] || { echo "delete stale asset $n"; gh release delete-asset "$TAG" "$n" --yes; }
+            done
             gh release upload "$TAG" release/* --clobber
-            gh release edit "$TAG" --notes-file notes.md
+            gh release edit "$TAG" --notes-file notes.md --prerelease="${{ inputs.prerelease }}"
           else
             gh release create "$TAG" release/* --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA" "${flags[@]}"
           fi
