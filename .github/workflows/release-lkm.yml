@@ -1,0 +1,101 @@
+name: Release AVD LKMs
+
+# Publishes one GitHub Release per upstream version: tag "<variant>-<version>",
+# e.g. kernelsu-v3.3.1 or kernelsu-next-v3.4.2. avd-ksu.py consumes these releases.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: KernelSU project
+        type: choice
+        options: [kernelsu, kernelsu-next]
+        default: kernelsu
+      version:
+        description: Upstream release tag (vX.Y.Z)
+        required: true
+      prerelease:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          [[ "${{ inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like v3.3.1"; exit 1; }
+
+  build:
+    needs: check
+    uses: ./.github/workflows/build-lkm.yml
+    with:
+      variant: ${{ inputs.variant }}
+      ref: ${{ inputs.version }}
+      target: all
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble release assets
+        env:
+          V: ${{ inputs.version }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          mkdir -p release
+          # kernelsu.ko per target: <target>_<variant>-<version>_kernelsu.ko
+          for d in artifacts/lkm-*/; do
+            for ko in "$d"*_kernelsu.ko; do
+              t=$(basename "$ko" _kernelsu.ko)
+              cp "$ko" "release/${t}_${VARIANT}-${V}_kernelsu.ko"
+            done
+          done
+          # host tools: ksud-<variant>-<version>-<triple>[.exe], ksuinit-x86_64-<variant>-<version>
+          for f in artifacts/host-tools*/*; do
+            n=$(basename "$f")
+            case "$n" in
+              ksud-*) cp "$f" "release/ksud-${VARIANT}-${V}-${n#ksud-}" ;;
+              ksuinit-x86_64) cp "$f" "release/ksuinit-x86_64-${VARIANT}-${V}" ;;
+            esac
+          done
+          cp .github/avd-targets.json avd-ksu.py release/
+          n_ko=$(ls release/*_kernelsu.ko | wc -l)
+          n_t=$(jq '.targets | length' .github/avd-targets.json)
+          [ "$n_ko" = "$n_t" ] || { echo "::error::expected $n_t LKMs, got $n_ko"; exit 1; }
+          ls release/ksud-*-x86_64-pc-windows-gnu.exe release/ksuinit-x86_64-* >/dev/null
+          (cd release && sha256sum * > SHA256SUMS)
+          cat release/SHA256SUMS
+      - name: Release notes
+        env:
+          V: ${{ inputs.version }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          {
+            echo "${VARIANT} ${V} LKMs for stock Android Studio x86_64 AVDs, each built against the AVD kernel's exact source."
+            echo
+            echo "| Target | Kernel |"
+            echo "| :--- | :--- |"
+            jq -r '.targets[] | "| \(.label) | `\(.kernel_release)` |"' .github/avd-targets.json
+            echo
+            echo "Patch an AVD: \`python avd-ksu.py patch --avd <name> --variant ${VARIANT} --version ${V}\` (see README)."
+            echo "Install the matching ${VARIANT} ${V} manager APK from the upstream release."
+          } > notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.variant }}-${{ inputs.version }}
+        run: |
+          flags=(); [ "${{ inputs.prerelease }}" = true ] && flags+=(--prerelease)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" release/* --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA" "${flags[@]}"
+          fi

@@ -1,0 +1,180 @@
+name: Build AVD LKMs
+
+# Builds kernelsu.ko for every AVD kernel in .github/avd-targets.json against that kernel's
+# exact kernel/common source, plus the host tools (ksud, ksuinit) used to patch ramdisk.img.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: KernelSU project
+        type: choice
+        options: [kernelsu, kernelsu-next]
+        default: kernelsu
+      ref:
+        description: Upstream tag, branch or commit (e.g. v3.3.1)
+        required: true
+        default: v3.3.1
+      target:
+        description: Target id from avd-targets.json, or "all"
+        default: all
+  workflow_call:
+    inputs:
+      variant: { type: string, required: true }
+      ref: { type: string, required: true }
+      target: { type: string, default: all }
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      upstream: ${{ steps.m.outputs.upstream }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        env:
+          TARGET: ${{ inputs.target }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          case "$VARIANT" in
+            kernelsu) echo "upstream=tiann/KernelSU" >> "$GITHUB_OUTPUT" ;;
+            kernelsu-next) echo "upstream=KernelSU-Next/KernelSU-Next" >> "$GITHUB_OUTPUT" ;;
+            *) echo "unknown variant $VARIANT"; exit 1 ;;
+          esac
+          m=$(jq -c --arg t "$TARGET" '[.targets[] | select($t == "all" or .id == $t) | {id, kmi}]' .github/avd-targets.json)
+          [ "$m" != "[]" ] || { echo "no target matches '$TARGET'"; exit 1; }
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+
+  lkm:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    name: lkm (${{ matrix.target.id }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.setup.outputs.upstream }}
+          ref: ${{ inputs.ref }}
+          path: upstream
+          fetch-depth: 0          # version number = 30000 + commit count
+      - name: Cache kernel source
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/work/${{ matrix.target.id }}/common-*.tar.gz
+          key: kernel-src-${{ matrix.target.id }}-${{ hashFiles('.github/avd-targets.json') }}
+          restore-keys: kernel-src-${{ matrix.target.id }}-
+      - name: Build kernelsu.ko
+        run: |
+          bash scripts/build-target.sh "${{ matrix.target.id }}" "${{ inputs.variant }}" \
+            "$GITHUB_WORKSPACE/upstream" "$(git -C upstream rev-parse HEAD)" "$RUNNER_TEMP/work"
+          out="$RUNNER_TEMP/work/${{ matrix.target.id }}/out-${{ inputs.variant }}"
+          mkdir -p dist
+          cp "$out/kernelsu.ko" "dist/${{ matrix.target.id }}_kernelsu.ko"
+          cp "$RUNNER_TEMP/work/${{ matrix.target.id }}/target.env" "dist/${{ matrix.target.id }}.env"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lkm-${{ matrix.target.id }}
+          path: dist/*
+          if-no-files-found: error
+
+  # KernelSU publishes host ksud + ksuinit-x86_64 in its releases; reuse them for tags.
+  host-tools-kernelsu:
+    if: inputs.variant == 'kernelsu'
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          mkdir -p dist && cd dist
+          gh release download "$REF" -R tiann/KernelSU \
+            -p 'ksud-x86_64-pc-windows-gnu.exe' -p 'ksud-x86_64-unknown-linux-musl' \
+            -p 'ksud-x86_64-apple-darwin' -p 'ksud-aarch64-apple-darwin' -p 'ksud-aarch64-unknown-linux-musl' \
+            -p 'ksuinit-x86_64' \
+            || { echo "::error::host tools need a KernelSU release tag (got '$REF')"; exit 1; }
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-tools
+          path: dist/*
+
+  # KernelSU-Next releases do not ship host ksud / ksuinit-x86_64: build them like upstream CI does.
+  ksuinit-kernelsu-next:
+    if: inputs.variant == 'kernelsu-next'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: KernelSU-Next/KernelSU-Next
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r29
+      - name: Build ksuinit (x86_64)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          rustup update stable && rustup target add x86_64-linux-android
+          LLVM_BIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+          export CLANG_PATH="$LLVM_BIN/x86_64-linux-android26-clang"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$CLANG_PATH"
+          BUILTINS="$($CLANG_PATH --print-resource-dir)/lib/linux/libclang_rt.builtins-x86_64-android.a"
+          export RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wno-unused-command-line-argument -C link-arg=$BUILTINS"
+          cd userspace/ksuinit && cargo build --target=x86_64-linux-android --release
+          mkdir -p "$GITHUB_WORKSPACE/dist" && cp target/x86_64-linux-android/release/ksuinit "$GITHUB_WORKSPACE/dist/ksuinit-x86_64"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-tools-ksuinit
+          path: dist/*
+
+  ksud-kernelsu-next:
+    if: inputs.variant == 'kernelsu-next'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { triple: x86_64-pc-windows-gnu, os: ubuntu-latest }
+          - { triple: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { triple: aarch64-unknown-linux-musl, os: ubuntu-latest }
+          - { triple: x86_64-apple-darwin, os: macos-latest }
+          - { triple: aarch64-apple-darwin, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    name: ksud (${{ matrix.triple }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: KernelSU-Next/KernelSU-Next
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0          # ksud version = 30000 + commit count
+      - name: Setup Rust
+        run: |
+          rustup update stable
+          rustup target add ${{ matrix.triple }}
+          RUSTFLAGS="" cargo install cross --git https://github.com/cross-rs/cross --rev 66845c1
+      - name: Assemble LKM bootstrap
+        run: |
+          if [ -f userspace/ksud/src/lkm_image_bootstrap.S ]; then
+            clang --target=aarch64-linux-gnu -c -nostdlib \
+              -o userspace/ksud/.lkm_image_bootstrap.o userspace/ksud/src/lkm_image_bootstrap.S
+          fi
+      - name: Build ksud
+        run: |
+          CROSS_NO_WARNINGS=0 cross build --target ${{ matrix.triple }} --release --manifest-path ./userspace/ksud/Cargo.toml
+          mkdir -p dist
+          ext=""; [ "${{ matrix.triple }}" = x86_64-pc-windows-gnu ] && ext=.exe
+          cp "userspace/ksud/target/${{ matrix.triple }}/release/ksud$ext" "dist/ksud-${{ matrix.triple }}$ext"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-tools-ksud-${{ matrix.triple }}
+          path: dist/*
