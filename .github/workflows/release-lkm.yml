@@ -2,6 +2,9 @@ name: Release AVD LKMs
 
 # Publishes one GitHub Release per upstream version: tag "<variant>-<version>",
 # e.g. kernelsu-v3.3.1 or kernelsu-next-v3.4.2. avd-ksu.py consumes these releases.
+# kernelsu-next-susfs is a preview built from a branch of this repository owner's KernelSU-Next
+# fork: its version is `git describe` of that commit (e.g. v3.4.2-104-gfe10a39f) and its
+# release is always a prerelease.
 
 on:
   workflow_dispatch:
@@ -9,10 +12,10 @@ on:
       variant:
         description: KernelSU project
         type: choice
-        options: [kernelsu, kernelsu-next]
+        options: [kernelsu, kernelsu-next, kernelsu-next-susfs]
         default: kernelsu
       version:
-        description: Upstream release tag (vX.Y.Z)
+        description: Upstream release tag (vX.Y.Z); for kernelsu-next-susfs the fork branch or commit (e.g. susfs-x64-avd)
         required: true
       prerelease:
         type: boolean
@@ -24,20 +27,48 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.v.outputs.ref }}
+      version: ${{ steps.v.outputs.version }}
+      base: ${{ steps.v.outputs.base }}
     steps:
-      - run: |
-          [[ "${{ inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like v3.3.1"; exit 1; }
+      - if: inputs.variant == 'kernelsu-next-susfs'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/KernelSU-Next
+          ref: ${{ inputs.version }}
+          path: fork
+          fetch-depth: 0
+      - id: v
+        env:
+          VARIANT: ${{ inputs.variant }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$VARIANT" = kernelsu-next-susfs ]; then
+            # Upstream tags for `git describe`, upstream dev for the base commit whose official
+            # manager build is attached.
+            git -C fork fetch -q --tags https://github.com/KernelSU-Next/KernelSU-Next +refs/heads/dev:refs/remotes/upstream/dev
+            sha=$(git -C fork rev-parse HEAD)
+            base=$(git -C fork merge-base HEAD upstream/dev)
+            ver=v$(git -C fork describe --tags --always HEAD | sed 's/^v//')
+            [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-g[0-9a-f]+$ ]] || { echo "::error::unexpected describe '$ver'"; exit 1; }
+            echo "ref=$sha" >> "$GITHUB_OUTPUT"; echo "version=$ver" >> "$GITHUB_OUTPUT"; echo "base=$base" >> "$GITHUB_OUTPUT"
+            echo "fork $VERSION = $sha -> $ver (upstream dev base $base)"
+          else
+            [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like v3.3.1"; exit 1; }
+            echo "ref=$VERSION" >> "$GITHUB_OUTPUT"; echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          fi
 
   build:
     needs: check
     uses: ./.github/workflows/build-lkm.yml
     with:
       variant: ${{ inputs.variant }}
-      ref: ${{ inputs.version }}
+      ref: ${{ needs.check.outputs.ref }}
       target: all
 
   release:
-    needs: build
+    needs: [check, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,15 +77,22 @@ jobs:
           path: artifacts
       - name: Assemble release assets
         env:
-          V: ${{ inputs.version }}
+          V: ${{ needs.check.outputs.version }}
           VARIANT: ${{ inputs.variant }}
+          BASE: ${{ needs.check.outputs.base }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release
-          # kernelsu.ko per target: <target>_<variant>-<version>_kernelsu.ko
+          # kernelsu.ko per target: <target>_<variant>-<version>_kernelsu.ko (and _susfs_guard_lkm.ko)
           for d in artifacts/lkm-*/; do
             for ko in "$d"*_kernelsu.ko; do
               t=$(basename "$ko" _kernelsu.ko)
               cp "$ko" "release/${t}_${VARIANT}-${V}_kernelsu.ko"
+            done
+            for ko in "$d"*_susfs_guard_lkm.ko; do
+              [ -e "$ko" ] || continue
+              t=$(basename "$ko" _susfs_guard_lkm.ko)
+              cp "$ko" "release/${t}_${VARIANT}-${V}_susfs_guard_lkm.ko"
             done
           done
           # host tools: ksud-<variant>-<version>-<triple>[.exe], ksuinit-x86_64-<variant>-<version>
@@ -69,23 +107,45 @@ jobs:
           n_ko=$(ls release/*_kernelsu.ko | wc -l)
           n_t=$(jq '.targets | length' .github/avd-targets.json)
           [ "$n_ko" = "$n_t" ] || { echo "::error::expected $n_t LKMs, got $n_ko"; exit 1; }
+          if [ "$VARIANT" = kernelsu-next-susfs ]; then
+            n_s=$(ls release/*_susfs_guard_lkm.ko | wc -l)
+            [ "$n_s" = "$n_t" ] || { echo "::error::expected $n_t SUSFS LKMs, got $n_s"; exit 1; }
+            # No KernelSU-Next release has this kernel's uapi: attach the official manager that
+            # upstream CI built from the fork's base commit on dev (signed with the upstream key).
+            run=$(gh run list -R KernelSU-Next/KernelSU-Next -w "Build Manager CI" -c "$BASE" -s success -L 1 \
+                  --json databaseId -q '.[0].databaseId')
+            [ -n "$run" ] || { echo "::error::no successful upstream Build Manager CI run for $BASE"; exit 1; }
+            gh run download "$run" -R KernelSU-Next/KernelSU-Next -n manager -D mgr
+            apk=$(ls mgr/*.apk | head -1)
+            [ -n "$apk" ] || { echo "::error::run $run has no manager APK"; exit 1; }
+            cp "$apk" release/
+            echo "$run" > manager-run.txt
+          fi
           ls release/ksud-*-x86_64-pc-windows-gnu.exe release/ksuinit-x86_64-* >/dev/null
           (cd release && sha256sum * > SHA256SUMS)
           cat release/SHA256SUMS
       - name: Release notes
         env:
           GH_TOKEN: ${{ github.token }}
-          V: ${{ inputs.version }}
+          V: ${{ needs.check.outputs.version }}
+          REF: ${{ needs.check.outputs.ref }}
+          BASE: ${{ needs.check.outputs.base }}
           VARIANT: ${{ inputs.variant }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           case "$VARIANT" in
             kernelsu) UP=tiann/KernelSU; TOOLS="unmodified binaries from the upstream release [$UP@$V](https://github.com/$UP/releases/tag/$V), source" ;;
             kernelsu-next) UP=KernelSU-Next/KernelSU-Next; TOOLS="built unmodified from" ;;
+            kernelsu-next-susfs) UP=$OWNER/KernelSU-Next; TOOLS="built from" ;;
           esac
-          UP_SHA=$(gh api "repos/$UP/commits/$V" --jq .sha)
+          UP_SHA=$(gh api "repos/$UP/commits/$REF" --jq .sha)
           REPO="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
           {
-            echo "${VARIANT} ${V} LKMs for stock Android Studio x86_64 AVDs, each built against the AVD kernel's exact source."
+            if [ "$VARIANT" = kernelsu-next-susfs ]; then
+              echo "**Preview, not an upstream release.** KernelSU-Next with the x86_64 SUSFS guard LKM, built from the fork branch commit [$UP@${UP_SHA:0:12}](https://github.com/$UP/tree/$UP_SHA) (\`$V\`) for stock Android Studio x86_64 AVDs, each module built against the AVD kernel's exact source."
+            else
+              echo "${VARIANT} ${V} LKMs for stock Android Studio x86_64 AVDs, each built against the AVD kernel's exact source."
+            fi
             echo
             echo "| Target | Kernel | \`kernel/common\` | Patches |"
             echo "| :--- | :--- | :--- | :--- |"
@@ -100,21 +160,42 @@ jobs:
             done
             echo
             echo "Patch an AVD: \`python avd-ksu.py patch --avd <name> --variant ${VARIANT} --version ${V}\` (see README)."
-            echo "Install the matching ${VARIANT} ${V} manager APK from the upstream release."
+            if [ "$VARIANT" = kernelsu-next-susfs ]; then
+              apk=$(cd release && ls *.apk)
+              run=$(cat manager-run.txt)
+              echo "Install the attached manager \`$apk\`: the official KernelSU-Next CI build ([run $run](https://github.com/KernelSU-Next/KernelSU-Next/actions/runs/$run)) of upstream \`dev\` at [\`${BASE:0:12}\`](https://github.com/KernelSU-Next/KernelSU-Next/commit/$BASE), the commit this branch is based on. KernelSU-Next v3.4.2's manager does not match this kernel module."
+              echo "Then, with the rooted AVD running, install and load SUSFS: \`python avd-ksu.py susfs --version ${V}\` (loads it now and at every boot)."
+              echo
+              echo "### Known limitations"
+              echo
+              echo "- A15, A16, A16 QPR and A17 (API 35, 36.0, 36.1, 37.0): root, SUSFS loading and hiding all work in testing."
+              echo "- A13 and A14 (API 33, 34): root and SUSFS load, but hiding is partial: \`O_PATH\` opens, \`mkdir\` and directory listings still reveal a hidden path (no IBT landing pads for SUSFS's opath, kstat and create hooks on these kernels)."
+              echo "- 16 KB page-size images (API 37.1, 37.2): no root. The attached manager's \`libksud.so\` is 4 KB aligned, so \`/data/adb/ksud\` is never installed; the AVD still boots."
+              echo "- Preview builds from a fork branch: not reviewed upstream. See the [README](https://github.com/$GITHUB_REPOSITORY#preview-kernelsu-next--susfs-kernelsu-next-susfs)."
+            else
+              echo "Install the matching ${VARIANT} ${V} manager APK from the upstream release."
+            fi
             echo
             echo "### Sources and licenses"
             echo
-            echo "- \`*_kernelsu.ko\` (GPL-2.0-only): \`kernel/\` of [$UP@$V](https://github.com/$UP/tree/$UP_SHA) (\`${UP_SHA:0:12}\`) plus the patches listed above, built against the listed \`kernel/common\` commit with the AVD kernel's own config by [$GITHUB_REPOSITORY@${GITHUB_SHA:0:7}]($REPO/tree/$GITHUB_SHA)."
-            echo "- \`ksud-*\`, \`ksuinit-x86_64-*\` (GPL-3.0-or-later): $TOOLS [$UP@$V](https://github.com/$UP/tree/$UP_SHA)."
+            if [ "$VARIANT" = kernelsu-next-susfs ]; then
+              echo "- \`*_kernelsu.ko\`, \`*_susfs_guard_lkm.ko\` (GPL-2.0-only): \`kernel/\` and \`kernel/susfs/\` of [$UP@${UP_SHA:0:12}](https://github.com/$UP/tree/$UP_SHA) plus the patches listed above, built against the listed \`kernel/common\` commit with the AVD kernel's own config by [$GITHUB_REPOSITORY@${GITHUB_SHA:0:7}]($REPO/tree/$GITHUB_SHA)."
+              echo "- \`ksud-*\`, \`ksuinit-x86_64-*\` (GPL-3.0-or-later): built from [$UP@${UP_SHA:0:12}](https://github.com/$UP/tree/$UP_SHA)."
+              echo "- \`$(cd release && ls *.apk)\` (GPL-3.0-or-later): unmodified upstream CI build of [KernelSU-Next/KernelSU-Next@${BASE:0:12}](https://github.com/KernelSU-Next/KernelSU-Next/tree/$BASE)."
+            else
+              echo "- \`*_kernelsu.ko\` (GPL-2.0-only): \`kernel/\` of [$UP@$V](https://github.com/$UP/tree/$UP_SHA) (\`${UP_SHA:0:12}\`) plus the patches listed above, built against the listed \`kernel/common\` commit with the AVD kernel's own config by [$GITHUB_REPOSITORY@${GITHUB_SHA:0:7}]($REPO/tree/$GITHUB_SHA)."
+              echo "- \`ksud-*\`, \`ksuinit-x86_64-*\` (GPL-3.0-or-later): $TOOLS [$UP@$V](https://github.com/$UP/tree/$UP_SHA)."
+            fi
             echo "- \`avd-ksu.py\`, \`avd-targets.json\`: Apache-2.0, from [$GITHUB_REPOSITORY@${GITHUB_SHA:0:7}]($REPO/tree/$GITHUB_SHA)."
           } > notes.md
           cat notes.md
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.variant }}-${{ inputs.version }}
+          TAG: ${{ inputs.variant }}-${{ needs.check.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease || inputs.variant == 'kernelsu-next-susfs' }}
         run: |
-          flags=(); [ "${{ inputs.prerelease }}" = true ] && flags+=(--prerelease)
+          flags=(); [ "$PRERELEASE" = true ] && flags+=(--prerelease)
           if gh release view "$TAG" >/dev/null 2>&1; then
             # Re-publish: drop assets this run no longer produces (e.g. a removed or renamed
             # target), so nothing outside SHA256SUMS stays attached.
@@ -122,7 +203,7 @@ jobs:
               [ -e "release/$n" ] || { echo "delete stale asset $n"; gh release delete-asset "$TAG" "$n" --yes; }
             done
             gh release upload "$TAG" release/* --clobber
-            gh release edit "$TAG" --notes-file notes.md --prerelease="${{ inputs.prerelease }}"
+            gh release edit "$TAG" --notes-file notes.md --prerelease="$PRERELEASE"
           else
             gh release create "$TAG" release/* --title "$TAG" --notes-file notes.md --target "$GITHUB_SHA" "${flags[@]}"
           fi

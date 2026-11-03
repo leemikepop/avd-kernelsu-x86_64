@@ -9,7 +9,7 @@ Steps (no device, no full image download):
 
 Outputs in --out: kernel-ranchu, manifest.xml, common-<sha>.tar.gz, target.env
 (target.env is shell-sourceable: TARGET_ID, KMI, BUILD_ID, COMMON_SHA, SRC_TGZ, DDK_IMAGE,
- PATCHES_KERNELSU, PATCHES_KERNELSU_NEXT).
+ PATCHES_KERNELSU, PATCHES_KERNELSU_NEXT, PATCHES_KERNELSU_NEXT_SUSFS).
 """
 import argparse
 import io
@@ -137,7 +137,7 @@ def main():
         "KERNEL_RELEASE": rel, "COMMON_SHA": sha, "SRC_TGZ": tgz.name,
         "DDK_IMAGE": f"ghcr.io/ylarod/ddk-min:{t['kmi']}-{cfg['ddk_release']}",
     }
-    for variant in ("kernelsu", "kernelsu-next"):
+    for variant in ("kernelsu", "kernelsu-next", "kernelsu-next-susfs"):
         key = "PATCHES_" + variant.upper().replace("-", "_")
         env[key] = '"' + " ".join(t.get("patches", {}).get(variant, [])) + '"'
     (a.out / "target.env").write_text("".join(f"{k}={v}\n" for k, v in env.items()))

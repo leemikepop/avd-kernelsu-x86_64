@@ -9,11 +9,12 @@ on:
       variant:
         description: KernelSU project
         type: choice
-        options: [kernelsu, kernelsu-next]
+        options: [kernelsu, kernelsu-next, kernelsu-next-susfs]
         default: kernelsu
       ref:
         # No default: KernelSU and KernelSU-Next use different tags (v3.3.1 vs v3.4.2).
-        description: Upstream tag, branch or commit (e.g. v3.3.1 for kernelsu, v3.4.2 for kernelsu-next)
+        # kernelsu-next-susfs builds this repository owner's KernelSU-Next fork (e.g. susfs-x64-avd).
+        description: Upstream tag, branch or commit (e.g. v3.3.1 for kernelsu, v3.4.2 for kernelsu-next, susfs-x64-avd for kernelsu-next-susfs)
         required: true
       target:
         description: Target id from avd-targets.json, or "all"
@@ -53,6 +54,8 @@ jobs:
           case "$VARIANT" in
             kernelsu) echo "upstream=tiann/KernelSU" >> "$GITHUB_OUTPUT" ;;
             kernelsu-next) echo "upstream=KernelSU-Next/KernelSU-Next" >> "$GITHUB_OUTPUT" ;;
+            # KernelSU-Next + the x86_64 SUSFS guard LKM, from a fork branch (preview builds).
+            kernelsu-next-susfs) echo "upstream=${{ github.repository_owner }}/KernelSU-Next" >> "$GITHUB_OUTPUT" ;;
             *) echo "unknown variant $VARIANT"; exit 1 ;;
           esac
           m=$(jq -c --arg t "$TARGET" '[.targets[] | select($t == "all" or .id == $t) | {id, kmi}]' .github/avd-targets.json)
@@ -88,6 +91,9 @@ jobs:
           out="$RUNNER_TEMP/work/${{ matrix.target.id }}/out-${{ inputs.variant || 'kernelsu' }}"
           mkdir -p dist
           cp "$out/kernelsu.ko" "dist/${{ matrix.target.id }}_kernelsu.ko"
+          if [ -f "$out/susfs_guard_lkm.ko" ]; then
+            cp "$out/susfs_guard_lkm.ko" "dist/${{ matrix.target.id }}_susfs_guard_lkm.ko"
+          fi
           cp "$RUNNER_TEMP/work/${{ matrix.target.id }}/target.env" "dist/${{ matrix.target.id }}.env"
       - uses: actions/upload-artifact@v4
         with:
@@ -117,14 +123,16 @@ jobs:
           name: host-tools
           path: dist/*
 
-  # KernelSU-Next releases do not ship host ksud / ksuinit-x86_64: build them like upstream CI does.
+  # KernelSU-Next releases do not ship host ksud / ksuinit-x86_64: build them like upstream CI does
+  # (from the same repository and ref as kernelsu.ko, so also from the fork for kernelsu-next-susfs).
   ksuinit-kernelsu-next:
-    if: (inputs.variant || 'kernelsu') == 'kernelsu-next'
+    if: startsWith(inputs.variant || 'kernelsu', 'kernelsu-next')
+    needs: setup
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: KernelSU-Next/KernelSU-Next
+          repository: ${{ needs.setup.outputs.upstream }}
           ref: ${{ inputs.ref || 'v3.3.1' }}
           fetch-depth: 0
       - uses: nttld/setup-ndk@v1
@@ -149,7 +157,8 @@ jobs:
           path: dist/*
 
   ksud-kernelsu-next:
-    if: (inputs.variant || 'kernelsu') == 'kernelsu-next'
+    if: startsWith(inputs.variant || 'kernelsu', 'kernelsu-next')
+    needs: setup
     strategy:
       fail-fast: false
       matrix:
@@ -164,7 +173,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: KernelSU-Next/KernelSU-Next
+          repository: ${{ needs.setup.outputs.upstream }}
           ref: ${{ inputs.ref || 'v3.3.1' }}
           fetch-depth: 0          # ksud version = 30000 + commit count
       - name: Setup Rust
