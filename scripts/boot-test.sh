@@ -49,7 +49,9 @@ stop_emu() {
   for _ in $(seq 1 20); do kill -0 "$EMU_PID" 2>/dev/null || return 0; sleep 2; done
   kill -9 "$EMU_PID" 2>/dev/null; sleep 3
 }
-finish() { stop_emu; exit "$1"; }
+# Flush /data before killing the emulator: the manager (re)writes /data/adb/ksud when opened, and an
+# unsynced ksud comes back truncated on the next boot ("Exec format error", no root).
+finish() { timeout 30 $A shell sync >/dev/null 2>&1; stop_emu; exit "$1"; }
 
 timeout 30 $A emu kill >/dev/null 2>&1; sleep 3
 start_emu -wipe-data
