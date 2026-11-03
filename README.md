@@ -130,7 +130,10 @@ Per target, CI:
 3. builds in `ghcr.io/ylarod/ddk-min:<kmi>` with the kernel's own config
    ([`scripts/build-lkm.sh`](scripts/build-lkm.sh)), keeping `CONFIG_RUST=y` code generation even though
    the image has no `rustc` (it changes kCFI hashing and function entry padding);
-4. applies the target's patches from [`patches/`](patches/) and fails if the config drifts from the device.
+4. applies the target's patches from [`patches/`](patches/) and fails if the config drifts from the device;
+5. checks the module with [`scripts/x86_icall_windows.py`](scripts/x86_icall_windows.py): on 6.2+
+   kernels no indirect call may have bytes in front of it that the kernel could take for a kCFI
+   sequence and rewrite at load time (see `x86_64-kcfi-icall-trampoline.patch` below).
 
 Local build (Docker): `scripts/build-target.sh <target> <kernelsu|kernelsu-next> <upstream-repo> <ref> <work-dir>`.
 
@@ -148,6 +151,13 @@ applies in reverse and is skipped.
   neither `x64_sys_call` nor commit fb13b11d, but upstream only falls back to replacing
   `do_syscall_64` on kernels < 5.16, so the module loads but its syscall hooks never fire. See
   [docs/notes/x86_64-syscall-hook-gap-6.1.md](docs/notes/x86_64-syscall-hook-gap-6.1.md).
+- `x86_64-kcfi-icall-trampoline.patch` (A15, A16, A17; not upstream yet): on 6.2+ x86_64 kernels
+  `module_finalize()` rewrites the four bytes after a `41 ba` / `eb 0c` found 14 bytes in front of
+  any indirect call, taking it for the kCFI caller sequence. In front of a `__nocfi` call those bytes
+  are arbitrary, and in six places they come from a relocation, so they depend on where the module was
+  loaded: in `ksu_hook_execve_common()` an unlucky load (estimated at most 1 in 32768) would corrupt the
+  code before the call to the original `execve`. The patch routes every unchecked call through one
+  `noinline __nocfi` trampoline, `ksu_icall8()`, whose call has fixed bytes in front of it.
 
 ## Adding an AVD kernel
 

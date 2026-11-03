@@ -27,6 +27,7 @@ on:
       - scripts/build-lkm.sh
       - scripts/build-target.sh
       - scripts/fetch_kernel_source.py
+      - scripts/x86_icall_windows.py
   workflow_call:
     inputs:
       variant: { type: string, required: true }

@@ -26,3 +26,7 @@ docker run --rm \
   -v "$(winpath "$ROOT/patches"):/patches:ro" \
   -v "$(winpath "$ROOT/scripts/build-lkm.sh"):/build-lkm.sh:ro" \
   "$DDK_IMAGE" bash /build-lkm.sh "$SRC_TGZ" "$KSU_REF" "out-$VARIANT" ${PATCHES[@]+"${PATCHES[@]}"}
+
+# A kernel with the kCFI caller rewrite (6.2+) patches bytes in front of unchecked indirect
+# calls at load time; fail the build if any could be mistaken for a kCFI sequence.
+"$PY" -I "$(winpath "$ROOT/scripts/x86_icall_windows.py")" "$(winpath "$TDIR/out-$VARIANT/kernelsu.ko")"
