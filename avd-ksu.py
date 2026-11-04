@@ -299,8 +299,11 @@ def cmd_patch(a):
     if a.variant.startswith("kernelsu-next") and cmdline.exists() and "page_shift=14" in cmdline.read_text():
         which = "KernelSU-Next v3.4.2's manager" if a.variant == "kernelsu-next" else \
             "The KernelSU-Next manager attached to this preview"
-        print(f"warning: this is a 16 KB page-size image. {which} ships a ksud that is not 16 KB "
-              "aligned, so root will not activate (KernelSU works). Continuing anyway.")
+        msg = (f"this is a 16 KB page-size image. {which} ships a ksud that is not 16 KB aligned, "
+               "so root will not activate (KernelSU works).")
+        if a.variant == SUSFS_VARIANT and not a.force:
+            die(msg + " Pass --force to patch it anyway.")
+        print(f"warning: {msg} Continuing anyway.")
 
     v = assets.version
     ko = Path(a.ko) if a.ko else assets.get(f"{t['id']}_{a.variant}-{v}_kernelsu.ko")
@@ -371,6 +374,14 @@ def cmd_susfs(a):
 
     if run("shell", "su -c 'id -u'").strip() != "0":
         die("`su` did not give root; finish the manager setup of the patched AVD first")
+    # The preview's manager installs a ksud built from a dev commit ("3.4.2-100-ga6c81fa4"); a
+    # release ksud ("3.4.2", "3.3.1") means the AVD runs a regular kernelsu.ko, which this
+    # module was not built against.
+    ksud_ver = run("shell", "su -c '/data/adb/ksud --version'").strip()
+    if not a.remove and not a.force and not re.search(r"-\d+-g[0-9a-f]+", ksud_ver):
+        die(f"/data/adb/ksud reports {ksud_ver!r}: this AVD looks rooted with a regular release. "
+            f"Patch it with --variant {SUSFS_VARIANT} and install that release's manager, "
+            "or pass --force.")
     if a.remove:
         print(root(f"rm -f {SUSFS_SCRIPT} {SUSFS_KO}\n"
                    "[ -d /sys/module/susfs_guard_lkm ] && /data/adb/ksud susfs unload\n"
@@ -426,6 +437,7 @@ def main():
             p.add_argument("--version", help="upstream version tag, e.g. v3.3.1 (default: latest)")
             p.add_argument("--out", help="write the patched ramdisk here instead of replacing the SDK one")
             p.add_argument("--allow-shell", action="store_true", help="pass --allow-shell to ksud")
+            p.add_argument("--force", action="store_true", help="patch even where root is known not to work")
             p.add_argument("--assets-dir", help=argparse.SUPPRESS)  # local release assets (testing)
             p.add_argument("--ko", help=argparse.SUPPRESS)
             p.add_argument("--ksud", help=argparse.SUPPRESS)
@@ -435,6 +447,7 @@ def main():
     p.add_argument("--image-dir", help=argparse.SUPPRESS)
     p.add_argument("--version", help="kernelsu-next-susfs release version (default: latest)")
     p.add_argument("--remove", action="store_true", help="unload it and stop loading it at boot")
+    p.add_argument("--force", action="store_true", help="skip the check that the AVD runs kernelsu-next-susfs")
     p.add_argument("--assets-dir", help=argparse.SUPPRESS)
     p.add_argument("--ko", help=argparse.SUPPRESS)
     a = ap.parse_args()
