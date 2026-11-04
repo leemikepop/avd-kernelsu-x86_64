@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Host-side driver (CI and local): resolve a target, then build kernelsu.ko in the DDK container.
 # Usage: scripts/build-target.sh <target-id> <kernelsu|kernelsu-next> <ksu-repo-dir> <ksu-ref> <work-dir>
-# Output: <work-dir>/<target-id>/out-<variant>/kernelsu.ko
+# Output: <work-dir>/<target-id>/out-<variant>/kernelsu.ko, plus susfs_guard_lkm.ko for
+#         kernelsu-next-susfs
 set -euo pipefail
 TARGET=$1; VARIANT=$2; KSU_REPO=$3; KSU_REF=$4; WORK=$5
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -19,10 +20,21 @@ PVAR=PATCHES_$(echo "$VARIANT" | tr 'a-z-' 'A-Z_')
 read -r -a PATCHES <<< "${!PVAR}"
 
 echo "== $TARGET / $VARIANT @ $KSU_REF in $DDK_IMAGE (patches: ${PATCHES[*]:-none})"
+SUSFS=0; [ "$VARIANT" = kernelsu-next-susfs ] && SUSFS=1
 docker run --rm \
-  -e KERNEL_RELEASE="$KERNEL_RELEASE" \
+  -e KERNEL_RELEASE="$KERNEL_RELEASE" -e BUILD_SUSFS="$SUSFS" \
   -v "$(winpath "$TDIR"):/in" \
   -v "$(winpath "$KSU_REPO"):/ksu:ro" \
   -v "$(winpath "$ROOT/patches"):/patches:ro" \
   -v "$(winpath "$ROOT/scripts/build-lkm.sh"):/build-lkm.sh:ro" \
   "$DDK_IMAGE" bash /build-lkm.sh "$SRC_TGZ" "$KSU_REF" "out-$VARIANT" ${PATCHES[@]+"${PATCHES[@]}"}
+
+# A kernel with the kCFI caller rewrite (6.2+) patches bytes in front of unchecked indirect
+# calls at load time; fail the build if any could be mistaken for a kCFI sequence.
+"$PY" -I "$(winpath "$ROOT/scripts/x86_icall_windows.py")" "$(winpath "$TDIR/out-$VARIANT/kernelsu.ko")"
+if [ "$SUSFS" = 1 ]; then
+  # Unchecked calls only in SUSFS_ICALL's trampoline, checked calls only into the module's own callbacks.
+  "$PY" -I "$(winpath "$ROOT/scripts/x86_icall_windows.py")" --trampoline susfs_icall8 \
+    --allow init_module,susfs_layers_down,susfs_tw_func,susfs_watch_freeing \
+    "$(winpath "$TDIR/out-$VARIANT/susfs_guard_lkm.ko")"
+fi

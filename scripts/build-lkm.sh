@@ -6,6 +6,7 @@
 #         /ksu = KernelSU / KernelSU-Next git repo (read-only is fine; it is cloned)
 #         /patches = this repo's patches/ dir (optional)
 # Usage:  build-lkm.sh <src.tgz> <ksu-ref> <out-dir-under-/in> [patch-relative-to-/patches ...]
+# Env:    BUILD_SUSFS=1 also builds kernel/susfs (susfs_guard_lkm.ko) into the same out dir.
 set -euo pipefail
 SRC_TGZ=/in/$1; KSU_REF=$2; OUT=/in/$3; shift 3; PATCHES=("$@")
 unset CROSS_COMPILE; export ARCH=x86_64 LLVM=1 LLVM_IAS=1
@@ -81,3 +82,15 @@ cp kernelsu.ko "$OUT/kernelsu.ko"
 VERMAGIC=$(modinfo -F vermagic "$OUT/kernelsu.ko" 2>/dev/null || strings kernelsu.ko | grep -m1 '^vermagic=' | cut -d= -f2)
 echo "vermagic: $VERMAGIC"
 ls -la "$OUT/kernelsu.ko"
+
+# kernelsu-next-susfs: the SUSFS guard LKM from the same source tree, against the same kdir.
+if [ "${BUILD_SUSFS:-0}" = 1 ]; then
+  echo "== susfs_guard_lkm.ko"
+  [ -d "$W/KernelSU/kernel/susfs" ] || { echo "!! $KSU_REF has no kernel/susfs"; exit 1; }
+  cd "$W/KernelSU/kernel/susfs"
+  make -C "$KDIR" M="$PWD" -j"$(nproc)" modules > "$OUT/susfs.log" 2>&1 \
+    || { grep -nE 'error' "$OUT/susfs.log" | head -20; exit 1; }
+  llvm-strip -d susfs_guard_lkm.ko
+  cp susfs_guard_lkm.ko "$OUT/susfs_guard_lkm.ko"
+  ls -la "$OUT/susfs_guard_lkm.ko"
+fi

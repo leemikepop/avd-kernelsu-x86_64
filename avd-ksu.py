@@ -6,9 +6,10 @@ for each AVD kernel is built in CI against that kernel's exact source and publis
 this repository's GitHub Releases, together with host ksud binaries.
 
   python avd-ksu.py list
-  python avd-ksu.py patch  --avd <name> [--variant kernelsu|kernelsu-next] [--version vX.Y.Z]
+  python avd-ksu.py patch  --avd <name> [--variant kernelsu|kernelsu-next|kernelsu-next-susfs] [--version vX.Y.Z]
   python avd-ksu.py restore --avd <name>
   python avd-ksu.py status --avd <name>
+  python avd-ksu.py susfs  [--serial emulator-5554] [--version V] [--remove]   (kernelsu-next-susfs only)
 
 Standard library only. Python 3.8+.
 """
@@ -28,7 +29,10 @@ import urllib.request
 from pathlib import Path
 
 REPO = os.environ.get("AVD_KSU_REPO", "leemikepop/avd-kernelsu-x86_64")
-VARIANTS = ("kernelsu", "kernelsu-next")
+VARIANTS = ("kernelsu", "kernelsu-next", "kernelsu-next-susfs")
+SUSFS_VARIANT = "kernelsu-next-susfs"   # preview: KernelSU-Next fork + the SUSFS guard LKM
+SUSFS_KO = "/data/adb/susfs_guard_lkm.ko"
+SUSFS_SCRIPT = "/data/adb/post-fs-data.d/50-susfs-guard.sh"
 STOCK_SUFFIX = ".stock"          # our backup of the untouched ramdisk
 STAMP = ".avd-ksu.json"          # written next to ramdisk.img after patching
 CACHE = Path(os.environ.get("AVD_KSU_CACHE", Path.home() / ".cache" / "avd-ksu"))
@@ -116,9 +120,10 @@ def version_key(ver):
 
 
 def find_release(variant, version):
-    """The release for an exact version, or the highest non-prerelease version."""
+    """The release for an exact version, or the highest non-prerelease version (the highest
+    prerelease when the variant has no other kind, as for the kernelsu-next-susfs preview)."""
     prefix = f"{variant}-"
-    candidates = []
+    candidates, pre = [], []
     for page in range(1, 11):
         rels = http_json(f"https://api.github.com/repos/{REPO}/releases?per_page=100&page={page}")
         for rel in rels:
@@ -131,12 +136,12 @@ def find_release(variant, version):
             if version is not None:
                 if ver == version:
                     return rel
-            elif not rel.get("prerelease"):
-                candidates.append((version_key(ver), rel))
+            else:
+                (pre if rel.get("prerelease") else candidates).append((version_key(ver), rel))
         if len(rels) < 100:
             break
-    if candidates:
-        return max(candidates, key=lambda c: c[0])[1]
+    if candidates or pre:
+        return max(candidates or pre, key=lambda c: c[0])[1]
     die(f"no release for {variant} {version or '(latest)'} in {REPO}")
 
 
@@ -201,6 +206,13 @@ class Assets:
 
 def manager_name(variant):
     return "KernelSU" if variant == "kernelsu" else "KernelSU Next"
+
+
+def manager_hint(variant, version):
+    if variant == SUSFS_VARIANT:
+        return (f"the KernelSU Next manager APK attached to the {variant}-{version} release, "
+                f"then `python avd-ksu.py susfs --version {version}` with the AVD running")
+    return f"the {manager_name(variant)} manager ({version})"
 
 
 def host_triple():
@@ -284,9 +296,14 @@ def cmd_patch(a):
     t = match_target(targets, rel)
     print(f"kernel {rel} -> target {t['id']} (KMI {t['kmi']})")
     cmdline = img / "kernel_cmdline.txt"
-    if a.variant == "kernelsu-next" and cmdline.exists() and "page_shift=14" in cmdline.read_text():
-        print("warning: this is a 16 KB page-size image. KernelSU-Next v3.4.2's manager ships a ksud that is "
-              "not 16 KB aligned, so root will not activate (KernelSU works). Continuing anyway.")
+    if a.variant.startswith("kernelsu-next") and cmdline.exists() and "page_shift=14" in cmdline.read_text():
+        which = "KernelSU-Next v3.4.2's manager" if a.variant == "kernelsu-next" else \
+            "The KernelSU-Next manager attached to this preview"
+        msg = (f"this is a 16 KB page-size image. {which} ships a ksud that is not 16 KB aligned, "
+               "so root will not activate (KernelSU works).")
+        if a.variant == SUSFS_VARIANT and not a.force:
+            die(msg + " Pass --force to patch it anyway.")
+        print(f"warning: {msg} Continuing anyway.")
 
     v = assets.version
     ko = Path(a.ko) if a.ko else assets.get(f"{t['id']}_{a.variant}-{v}_kernelsu.ko")
@@ -313,7 +330,7 @@ def cmd_patch(a):
             shutil.copy2(out, a.out)
             print(f"\nwrote {a.out}\nNext steps:\n"
                   f"  1. emulator -avd <name> -ramdisk \"{a.out}\" -no-snapshot-load\n"
-                  f"  2. Install and open the {manager_name(a.variant)} manager ({assets.version}).\n"
+                  f"  2. Install and open {manager_hint(a.variant, assets.version)}.\n"
                   "  3. Close the emulator and start it again with the same command "
                   "(avoid in-guest reboot: Emulator 37.2.13 can crash on it).")
             return
@@ -327,9 +344,73 @@ def cmd_patch(a):
     print(f"\npatched {img / 'ramdisk.img'}\n"
           "Every AVD using this system image is affected. Next steps:\n"
           "  1. Cold boot the AVD (Device Manager > Cold Boot Now, or emulator -no-snapshot-load).\n"
-          f"  2. Install and open the {manager_name(a.variant)} manager ({v}), then close the emulator\n"
+          f"  2. Install and open {manager_hint(a.variant, v)}, then close the emulator\n"
           "     and cold-boot it again (avoid in-guest reboot: Emulator 37.2.13 can crash on it).\n"
           "  3. Undo any time with: python avd-ksu.py restore --avd <name>")
+
+
+def adb_cmd(serial):
+    exe = sdk_root() / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
+    return [str(exe) if exe.exists() else "adb"] + (["-s", serial] if serial else [])
+
+
+def cmd_susfs(a):
+    """Install the SUSFS guard LKM on a running, rooted kernelsu-next-susfs AVD: copy it to
+    /data/adb, load it now, and load it at every boot from post-fs-data.d."""
+    adb = adb_cmd(a.serial)
+
+    def run(*args, **kw):
+        r = subprocess.run(adb + list(args), capture_output=True, text=True, **kw)
+        if r.returncode != 0:
+            die(f"adb {' '.join(args)} failed: {(r.stderr or r.stdout).strip()}")
+        return r.stdout.replace("\r", "")
+
+    def root(script):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "avd-ksu-susfs.sh"
+            f.write_bytes(script.encode())
+            run("push", str(f), "/data/local/tmp/avd-ksu-susfs.sh")
+        return run("shell", "su -c 'sh /data/local/tmp/avd-ksu-susfs.sh; rm -f /data/local/tmp/avd-ksu-susfs.sh'")
+
+    if run("shell", "su -c 'id -u'").strip() != "0":
+        die("`su` did not give root; finish the manager setup of the patched AVD first")
+    # The preview's manager installs a ksud built from a dev commit ("3.4.2-100-ga6c81fa4"); a
+    # release ksud ("3.4.2", "3.3.1") means the AVD runs a regular kernelsu.ko, which this
+    # module was not built against.
+    ksud_ver = run("shell", "su -c '/data/adb/ksud --version'").strip()
+    if not a.remove and not a.force and not re.search(r"-\d+-g[0-9a-f]+", ksud_ver):
+        die(f"/data/adb/ksud reports {ksud_ver!r}: this AVD looks rooted with a regular release. "
+            f"Patch it with --variant {SUSFS_VARIANT} and install that release's manager, "
+            "or pass --force.")
+    if a.remove:
+        print(root(f"rm -f {SUSFS_SCRIPT} {SUSFS_KO}\n"
+                   "[ -d /sys/module/susfs_guard_lkm ] && /data/adb/ksud susfs unload\n"
+                   "echo removed\n").strip())
+        return
+
+    # Prefer the AVD's kernel-ranchu: a loaded SUSFS may spoof `uname -r`.
+    rel = kernel_release(resolve_image(a) / "kernel-ranchu") if (a.avd or a.image_dir) \
+        else run("shell", "uname -r").strip()
+    assets = Assets(SUSFS_VARIANT, a.version, a.assets_dir)
+    targets = json.loads(assets.get("avd-targets.json").read_text(encoding="utf-8"))
+    t = match_target(targets, rel)
+    print(f"kernel {rel} -> target {t['id']} (KMI {t['kmi']})")
+    ko = Path(a.ko) if a.ko else assets.get(f"{t['id']}_{SUSFS_VARIANT}-{assets.version}_susfs_guard_lkm.ko")
+    run("push", str(ko), "/data/local/tmp/susfs_guard_lkm.ko")
+    out = root(f"""set -e
+cp /data/local/tmp/susfs_guard_lkm.ko {SUSFS_KO}
+rm -f /data/local/tmp/susfs_guard_lkm.ko
+chmod 600 {SUSFS_KO}
+mkdir -p /data/adb/post-fs-data.d
+printf '#!/system/bin/sh\\n/data/adb/ksud insmod {SUSFS_KO}\\n' > {SUSFS_SCRIPT}
+chmod 755 {SUSFS_SCRIPT}
+[ -d /sys/module/susfs_guard_lkm ] && /data/adb/ksud susfs unload >/dev/null
+/data/adb/ksud insmod {SUSFS_KO}
+echo "susfs version: $(/data/adb/ksud susfs version) ($(/data/adb/ksud susfs variant))"
+""")
+    print(out.strip())
+    print(f"installed {SUSFS_KO}; {SUSFS_SCRIPT} loads it at every boot.\n"
+          "Remove with: python avd-ksu.py susfs --remove")
 
 
 def cmd_restore(a):
@@ -356,11 +437,22 @@ def main():
             p.add_argument("--version", help="upstream version tag, e.g. v3.3.1 (default: latest)")
             p.add_argument("--out", help="write the patched ramdisk here instead of replacing the SDK one")
             p.add_argument("--allow-shell", action="store_true", help="pass --allow-shell to ksud")
+            p.add_argument("--force", action="store_true", help="patch even where root is known not to work")
             p.add_argument("--assets-dir", help=argparse.SUPPRESS)  # local release assets (testing)
             p.add_argument("--ko", help=argparse.SUPPRESS)
             p.add_argument("--ksud", help=argparse.SUPPRESS)
+    p = sub.add_parser("susfs", help="install the SUSFS guard LKM on a running kernelsu-next-susfs AVD")
+    p.add_argument("--serial", help="adb serial, e.g. emulator-5554 (default: the only device)")
+    p.add_argument("--avd", help="AVD name: match its kernel-ranchu instead of `uname -r`")
+    p.add_argument("--image-dir", help=argparse.SUPPRESS)
+    p.add_argument("--version", help="kernelsu-next-susfs release version (default: latest)")
+    p.add_argument("--remove", action="store_true", help="unload it and stop loading it at boot")
+    p.add_argument("--force", action="store_true", help="skip the check that the AVD runs kernelsu-next-susfs")
+    p.add_argument("--assets-dir", help=argparse.SUPPRESS)
+    p.add_argument("--ko", help=argparse.SUPPRESS)
     a = ap.parse_args()
-    {"list": cmd_list, "patch": cmd_patch, "restore": cmd_restore, "status": cmd_status}[a.cmd](a)
+    {"list": cmd_list, "patch": cmd_patch, "restore": cmd_restore, "status": cmd_status,
+     "susfs": cmd_susfs}[a.cmd](a)
 
 
 if __name__ == "__main__":

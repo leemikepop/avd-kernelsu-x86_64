@@ -1,0 +1,239 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+index 6c92a013..51ac0af4 100644
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -26,6 +26,7 @@ kernelsu-objs += infra/event_queue.o
+ kernelsu-objs += infra/seccomp_cache.o
+ kernelsu-objs += infra/su_mount_ns.o
+ kernelsu-objs += infra/symbol_resolver.o
++kernelsu-objs += infra/icall.o
+ 
+ ifneq ($(CONFIG_KSU_DISABLE_MANAGER),y)
+ kernelsu-objs += manager/apk_sign.o
+diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+index 459f99f9..fa53c8c8 100644
+--- a/kernel/feature/selinux_hide.c
++++ b/kernel/feature/selinux_hide.c
+@@ -1,4 +1,5 @@
+ #include "selinux_hide.h"
++#include "infra/icall.h"
+ #include "infra/symbol_resolver.h"
+ #include "linux/jump_label.h"
+ #include "linux/rcupdate.h"
+@@ -306,7 +307,7 @@ abort_change:
+     return error;
+ 
+ call_orig:
+-    return ((setprocattr_fn)selinux_setprocattr_hook.original)(name, value, size);
++    return KSU_ICALL((setprocattr_fn)selinux_setprocattr_hook.original, name, value, size);
+ }
+ 
+ static DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
+@@ -928,7 +929,7 @@ static void __nocfi type_attribute_bounds_av(struct policydb *policydb, struct c
+ 
+     /* audit masked permissions */
+     if (security_dump_masked_av_fn)
+-        security_dump_masked_av_fn(policydb, scontext, tcontext, tclass, masked, "bounds");
++        KSU_ICALL(security_dump_masked_av_fn, policydb, scontext, tcontext, tclass, masked, "bounds");
+ }
+ 
+ /*
+@@ -1245,7 +1246,7 @@ static void __nocfi security_compute_av_user_with_policy(struct selinux_policy *
+     }
+ 
+     if (context_struct_compute_av_fn) {
+-        context_struct_compute_av_fn(policydb, scontext, tcontext, tclass, avd, NULL);
++        KSU_ICALL(context_struct_compute_av_fn, policydb, scontext, tcontext, tclass, avd, NULL);
+     } else {
+         context_struct_compute_av(policydb, scontext, tcontext, tclass, avd, NULL);
+     }
+diff --git a/kernel/hook/syscall_event_bridge.c b/kernel/hook/syscall_event_bridge.c
+index 9d2977f1..8c5f4baf 100644
+--- a/kernel/hook/syscall_event_bridge.c
++++ b/kernel/hook/syscall_event_bridge.c
+@@ -18,6 +18,7 @@
+ #include "hook/syscall_hook.h"
+ #include "hook/syscall_event_bridge.h"
+ #include "feature/adb_root.h"
++#include "infra/icall.h"
+ 
+ static int ksu_handle_init_mark_tracker(const char __user **filename_user)
+ {
+@@ -51,7 +52,7 @@ static int ksu_handle_init_mark_tracker(const char __user **filename_user)
+ long __nocfi ksu_hook_newfstatat(int orig_nr, const struct pt_regs *regs)
+ {
+     if (!ksu_su_compat_enabled)
+-        return ksu_syscall_table[orig_nr](regs);
++        return KSU_ICALL(ksu_syscall_table[orig_nr], regs);
+ 
+     return ksu_handle_stat_sucompat(orig_nr, (struct pt_regs *)regs);
+ }
+@@ -59,7 +60,7 @@ long __nocfi ksu_hook_newfstatat(int orig_nr, const struct pt_regs *regs)
+ long __nocfi ksu_hook_faccessat(int orig_nr, const struct pt_regs *regs)
+ {
+     if (!ksu_su_compat_enabled)
+-        return ksu_syscall_table[orig_nr](regs);
++        return KSU_ICALL(ksu_syscall_table[orig_nr], regs);
+ 
+     return ksu_handle_faccessat_sucompat(orig_nr, (struct pt_regs *)regs);
+ }
+@@ -106,7 +107,7 @@ static long __nocfi ksu_hook_execve_common(int orig_nr, const struct pt_regs *re
+         return ret;
+     }
+ 
+-    ret = ksu_syscall_table[orig_nr](regs);
++    ret = KSU_ICALL(ksu_syscall_table[orig_nr], regs);
+     ksu_sulog_emit_pending(pending_root_execve, ret, GFP_KERNEL);
+     return ret;
+ }
+@@ -124,7 +125,7 @@ long __nocfi ksu_hook_execveat(int orig_nr, const struct pt_regs *regs)
+ long __nocfi ksu_hook_setresuid(int orig_nr, const struct pt_regs *regs)
+ {
+     uid_t old_uid = current_uid().val;
+-    long ret = ksu_syscall_table[orig_nr](regs);
++    long ret = KSU_ICALL(ksu_syscall_table[orig_nr], regs);
+ 
+     if (ret < 0)
+         return ret;
+diff --git a/kernel/hook/x86_64/syscall_hook.c b/kernel/hook/x86_64/syscall_hook.c
+index 1601efe6..ac7216ab 100644
+--- a/kernel/hook/x86_64/syscall_hook.c
++++ b/kernel/hook/x86_64/syscall_hook.c
+@@ -6,6 +6,7 @@
+ #include <linux/mutex.h>
+ #include <linux/nospec.h>
+ #include <asm/cacheflush.h>
++#include "infra/icall.h"
+ #include "infra/symbol_resolver.h"
+ #include "../patch_memory.h"
+ #include "arch.h"
+@@ -165,7 +166,7 @@ static long __nocfi ksu_syscall_dispatcher(const struct pt_regs *regs)
+     if (likely(orig_nr >= 0 && orig_nr < __NR_syscalls)) {
+         ksu_syscall_hook_fn fn = READ_ONCE(syscall_hooks[orig_nr]);
+         if (likely(fn))
+-            return fn(orig_nr, regs);
++            return KSU_ICALL(fn, orig_nr, regs);
+     }
+ 
+     return -ENOSYS;
+diff --git a/kernel/infra/icall.c b/kernel/infra/icall.c
+new file mode 100644
+index 00000000..3769c3e8
+--- /dev/null
++++ b/kernel/infra/icall.c
+@@ -0,0 +1,17 @@
++#include <linux/compiler.h>
++
++#include "infra/icall.h"
++
++#ifdef CONFIG_X86_64
++typedef unsigned long (*ksu_icall8_fn)(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long,
++                                       unsigned long, unsigned long, unsigned long);
++
++/* See icall.h.  noinline keeps the call's 14-byte window inside this function, where the
++ * compiler emits only argument moves in front of it. */
++noinline __nocfi unsigned long ksu_icall8(const void *fn, unsigned long a0, unsigned long a1, unsigned long a2,
++                                          unsigned long a3, unsigned long a4, unsigned long a5, unsigned long a6,
++                                          unsigned long a7)
++{
++    return ((ksu_icall8_fn)fn)(a0, a1, a2, a3, a4, a5, a6, a7);
++}
++#endif
+diff --git a/kernel/infra/icall.h b/kernel/infra/icall.h
+new file mode 100644
+index 00000000..b1f05cee
+--- /dev/null
++++ b/kernel/infra/icall.h
+@@ -0,0 +1,62 @@
++#ifndef __KSU_ICALL_H
++#define __KSU_ICALL_H
++
++/*
++ * KSU_ICALL(fn, args...): call through a runtime-resolved pointer without a CFI check.
++ *
++ * Calls through a resolved kernel address (the saved syscall table, an LSM hook's original,
++ * a kallsyms helper) must be unchecked, which is what the enclosing __nocfi does.  On x86_64
++ * an unchecked indirect call is also a hazard when the module is LOADED: module_finalize() ->
++ * apply_fineibt() reads the 14 bytes in front of every .retpoline_sites call
++ * (cfi_disable_callers(), cfi_rand_callers(), Linux 6.2+) and, when they start with 41 ba
++ * (movl $hash,%r10d) or eb 0c, takes them for the kCFI caller sequence and rewrites the four
++ * bytes after them.  In front of an unchecked call those bytes are whatever the compiler put
++ * there, often a rel32 whose value depends on where the module was loaded, so a load can
++ * corrupt the code before the call.
++ *
++ * So on x86_64 every unchecked call goes through one out-of-line trampoline, ksu_icall8(),
++ * whose own call is preceded by fixed register moves only.  Up to eight integer or pointer
++ * arguments; the result is converted back to the callee's return type (a bool from %al alone,
++ * as the ABI leaves the rest of %rax undefined).  Elsewhere this is a plain call.
++ */
++#ifdef CONFIG_X86_64
++unsigned long ksu_icall8(const void *fn, unsigned long a0, unsigned long a1, unsigned long a2, unsigned long a3,
++                         unsigned long a4, unsigned long a5, unsigned long a6, unsigned long a7);
++
++#define __KSU_IC_UL(x) ((unsigned long)(x))
++#define __KSU_IC_0(f) ksu_icall8(f, 0, 0, 0, 0, 0, 0, 0, 0)
++#define __KSU_IC_1(f, a) __KSU_IC_2(f, a, 0)
++#define __KSU_IC_2(f, a, b) __KSU_IC_3(f, a, b, 0)
++#define __KSU_IC_3(f, a, b, c) __KSU_IC_4(f, a, b, c, 0)
++#define __KSU_IC_4(f, a, b, c, d) __KSU_IC_5(f, a, b, c, d, 0)
++#define __KSU_IC_5(f, a, b, c, d, e) __KSU_IC_6(f, a, b, c, d, e, 0)
++#define __KSU_IC_6(f, a, b, c, d, e, g) __KSU_IC_7(f, a, b, c, d, e, g, 0)
++#define __KSU_IC_7(f, a, b, c, d, e, g, h) __KSU_IC_8(f, a, b, c, d, e, g, h, 0)
++#define __KSU_IC_8(f, a, b, c, d, e, g, h, i)                                                                     \
++    ksu_icall8(f, __KSU_IC_UL(a), __KSU_IC_UL(b), __KSU_IC_UL(c), __KSU_IC_UL(d), __KSU_IC_UL(e), __KSU_IC_UL(g), \
++               __KSU_IC_UL(h), __KSU_IC_UL(i))
++/* Counts the arguments after macro expansion (an argument may expand to "x, y"), so the
++ * function is part of __VA_ARGS__ here: never empty, no `##` to suppress the expansion.
++ * More than eight arguments selects an argument as the "macro" and fails to compile. */
++#define __KSU_IC_PICK(_f, _1, _2, _3, _4, _5, _6, _7, _8, N, ...) N
++#define __KSU_IC_N(...)                                                                                       \
++    __KSU_IC_PICK(__VA_ARGS__, __KSU_IC_8, __KSU_IC_7, __KSU_IC_6, __KSU_IC_5, __KSU_IC_4, __KSU_IC_3, __KSU_IC_2, \
++                  __KSU_IC_1, __KSU_IC_0)(__VA_ARGS__)
++
++#define __KSU_IC_RET(T, v)                                               \
++    __builtin_choose_expr(__builtin_types_compatible_p(T, void), (void)(v), \
++                          __builtin_choose_expr(__builtin_types_compatible_p(T, _Bool), (_Bool)(unsigned char)(v), (T)(v)))
++
++/* The dead direct call type-checks the arguments against fn's prototype; it is never emitted. */
++#define KSU_ICALL(fn, ...)                                                                                       \
++    ({                                                                                                           \
++        __auto_type __ksu_ic_fn = (fn);                                                                          \
++        if (0)                                                                                                   \
++            (void)__ksu_ic_fn(__VA_ARGS__);                                                                      \
++        __KSU_IC_RET(typeof(__ksu_ic_fn(__VA_ARGS__)), __KSU_IC_N((const void *)__ksu_ic_fn, ##__VA_ARGS__)); \
++    })
++#else
++#define KSU_ICALL(fn, ...) ((fn)(__VA_ARGS__))
++#endif
++
++#endif
+diff --git a/kernel/infra/symbol_resolver.c b/kernel/infra/symbol_resolver.c
+index f9576695..60b8b770 100644
+--- a/kernel/infra/symbol_resolver.c
++++ b/kernel/infra/symbol_resolver.c
+@@ -3,6 +3,7 @@
+ #include <linux/string.h>
+ #include <linux/version.h>
+ 
++#include "infra/icall.h"
+ #include "infra/symbol_resolver.h"
+ 
+ // https://github.com/torvalds/linux/commit/89245600941e4e0f87d77f60ee269b5e61ef4e49
+@@ -59,7 +60,7 @@ unsigned long __nocfi find_kernel_symbol_exact(const char *symbol_name)
+     unsigned long addr = 0;
+ #if HAVE_ON_EACH_MATCH_SYMBOL
+     if (likely(kallsyms_on_each_match_symbol_fn)) {
+-        kallsyms_on_each_match_symbol_fn(find_kernel_symbol_exact_cb, symbol_name, &addr);
++        KSU_ICALL(kallsyms_on_each_match_symbol_fn, find_kernel_symbol_exact_cb, symbol_name, &addr);
+         return addr;
+     }
+ #endif
+@@ -129,7 +130,7 @@ static __nocfi void *resolve_symbol_variant(const char *symbol_name, size_t symb
+ 
+ #if !ALWAYS_HAVE_ON_EACH_SYMBOL
+     if (kallsyms_on_each_symbol_fn) {
+-        kallsyms_on_each_symbol_fn(lookup_symbol_variant_cb, &ctx);
++        KSU_ICALL(kallsyms_on_each_symbol_fn, lookup_symbol_variant_cb, &ctx);
+     }
+     // TODO: iterate kallsyms by sprint_symbol
+ #else

@@ -58,7 +58,8 @@ Invoke-WebRequest https://github.com/leemikepop/avd-kernelsu-x86_64/releases/lat
 On first use it downloads the `kernelsu.ko` for your AVD's kernel and the `ksud` / `ksuinit` binaries
 for your host from this repository's [Releases](../../releases) (verified against `SHA256SUMS`) and
 caches them in `~/.cache/avd-ksu` (override with `AVD_KSU_CACHE`). Without `--version` it uses the
-newest stable release of the chosen variant: `kernelsu-vX.Y.Z` or `kernelsu-next-vX.Y.Z`.
+newest stable release of the chosen variant: `kernelsu-vX.Y.Z` or `kernelsu-next-vX.Y.Z` (for the
+`kernelsu-next-susfs` preview, which only has prereleases, the newest prerelease).
 
 ### Recommended: a separate patched ramdisk (`--out` + `-ramdisk`)
 
@@ -101,6 +102,39 @@ Without `--out`, `patch` replaces the SDK `ramdisk.img` (original kept as `ramdi
 is rooted even when started from Android Studio, and so is every other AVD on that image.
 `python avd-ksu.py restore --avd <name>` puts the stock ramdisk back. A ramdisk already patched by
 rootAVD/Magisk is detected through its `ramdisk.img.backup`, which is used as the stock source.
+
+### Preview: KernelSU-Next + SUSFS (`kernelsu-next-susfs`)
+
+KernelSU-Next with the x86_64 port of the SUSFS guard LKM (`susfs_guard_lkm.ko`). It is **not an upstream
+release**: it is built from the `susfs-x64-avd` branch of
+[leemikepop/KernelSU-Next](https://github.com/leemikepop/KernelSU-Next/tree/susfs-x64-avd), and its
+releases are prereleases tagged `kernelsu-next-susfs-v<describe>`, e.g. `kernelsu-next-susfs-v3.4.2-108-gfe10a39f`.
+Its kernel module needs a newer manager than KernelSU-Next v3.4.2, so each release attaches the official
+KernelSU-Next CI manager build of the upstream commit the branch is based on. Use the `avd-ksu.py`
+attached to that prerelease: the copy in the stable releases does not know this variant yet.
+
+```sh
+python avd-ksu.py patch --avd API36.0-GAPPS --variant kernelsu-next-susfs --out ksun-susfs-API36.0.img
+emulator -avd API36.0-GAPPS -ramdisk ksun-susfs-API36.0.img -no-snapshot-load
+# install + open the release's manager APK, restart the emulator, then (AVD running, rooted):
+python avd-ksu.py susfs --avd API36.0-GAPPS     # copy to /data/adb, load now and at every boot
+python avd-ksu.py susfs --remove                # unload, stop loading at boot
+```
+
+`susfs` needs `adb` (from the SDK's `platform-tools`) and root for the shell; it loads the module with
+`/data/adb/ksud insmod` from `/data/adb/post-fs-data.d/50-susfs-guard.sh`. `ksud susfs version` /
+`support` show its state; rules are set through the module's interfaces (SUSFS supercalls as used by
+`ksu_susfs`, and procfs files such as `/proc/susfs_path`).
+
+Tested on temporary AVDs (root, `susfs` install, autoload after a cold boot, `--remove`, a hidden path
+as seen by an app, `uname` spoofing):
+
+| AVD | Status |
+| :--- | :--- |
+| A15 (API 35), A16 (API 36.0), A16 QPR (API 36.1), A17 (API 37.0) | everything works |
+| A13 (API 33), A14 (API 34) | root and SUSFS load, but only partial hiding: `stat`/`open`/`access`/`statx` return `ENOENT`, while `O_PATH` opens, `mkdir` (`EEXIST`) and directory listings still reveal the path. These kernels have no IBT, and SUSFS's x86_64 syscall hooks need an `endbr64`/`__fentry__` landing pad, so its opath, kstat and create layers stay off |
+| 16 KB images (API 37.1, API 37.2) | no root: the manager's `libksud.so` is only 4 KB aligned, so `/data/adb/ksud` is never installed (the same limitation as KernelSU-Next v3.4.2). The module loads and the AVD boots |
+
 ## Releases
 
 Each release corresponds to one upstream version and is tagged `<variant>-<version>`, e.g.
@@ -109,6 +143,8 @@ Each release corresponds to one upstream version and is tagged `<variant>-<versi
 | Asset | Content |
 | :--- | :--- |
 | `<target>_<variant>-<version>_kernelsu.ko` | LKM for one AVD kernel |
+| `<target>_kernelsu-next-susfs-<version>_susfs_guard_lkm.ko` | SUSFS guard LKM (`kernelsu-next-susfs` only) |
+| `KernelSU_Next_*.apk` | official upstream CI manager build (`kernelsu-next-susfs` only) |
 | `ksud-<variant>-<version>-<triple>[.exe]` | host `ksud` (Windows, Linux, macOS) used for `boot-patch` |
 | `ksuinit-x86_64-<variant>-<version>` | `ksuinit` placed into the ramdisk as `/init` |
 | `avd-targets.json`, `avd-ksu.py`, `SHA256SUMS` | target list, patch tool, checksums |
@@ -130,7 +166,10 @@ Per target, CI:
 3. builds in `ghcr.io/ylarod/ddk-min:<kmi>` with the kernel's own config
    ([`scripts/build-lkm.sh`](scripts/build-lkm.sh)), keeping `CONFIG_RUST=y` code generation even though
    the image has no `rustc` (it changes kCFI hashing and function entry padding);
-4. applies the target's patches from [`patches/`](patches/) and fails if the config drifts from the device.
+4. applies the target's patches from [`patches/`](patches/) and fails if the config drifts from the device;
+5. checks the module with [`scripts/x86_icall_windows.py`](scripts/x86_icall_windows.py): on 6.2+
+   kernels no indirect call may have bytes in front of it that the kernel could take for a kCFI
+   sequence and rewrite at load time (see `x86_64-kcfi-icall-trampoline.patch` below).
 
 Local build (Docker): `scripts/build-target.sh <target> <kernelsu|kernelsu-next> <upstream-repo> <ref> <work-dir>`.
 
@@ -148,6 +187,13 @@ applies in reverse and is skipped.
   neither `x64_sys_call` nor commit fb13b11d, but upstream only falls back to replacing
   `do_syscall_64` on kernels < 5.16, so the module loads but its syscall hooks never fire. See
   [docs/notes/x86_64-syscall-hook-gap-6.1.md](docs/notes/x86_64-syscall-hook-gap-6.1.md).
+- `x86_64-kcfi-icall-trampoline.patch` (A15, A16, A17; not upstream yet): on 6.2+ x86_64 kernels
+  `module_finalize()` rewrites the four bytes after a `41 ba` / `eb 0c` found 14 bytes in front of
+  any indirect call, taking it for the kCFI caller sequence. In front of a `__nocfi` call those bytes
+  are arbitrary, and in six places they come from a relocation, so they depend on where the module was
+  loaded: in `ksu_hook_execve_common()` an unlucky load (estimated at most 1 in 32768) would corrupt the
+  code before the call to the original `execve`. The patch routes every unchecked call through one
+  `noinline __nocfi` trampoline, `ksu_icall8()`, whose call has fixed bytes in front of it.
 
 ## Adding an AVD kernel
 
