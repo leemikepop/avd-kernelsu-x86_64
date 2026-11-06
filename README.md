@@ -118,14 +118,23 @@ it picks the newest preview prerelease.
 python avd-ksu.py patch --avd API36.0-GAPPS --variant kernelsu-next-susfs --out ksun-susfs-API36.0.img
 emulator -avd API36.0-GAPPS -ramdisk ksun-susfs-API36.0.img -no-snapshot-load
 # install + open the release's manager APK, restart the emulator, then (AVD running, rooted):
-python avd-ksu.py susfs --avd API36.0-GAPPS     # copy to /data/adb, load now and at every boot
-python avd-ksu.py susfs --remove                # unload, stop loading at boot
+python avd-ksu.py susfs                         # install the SUSFS module, load it now and at every boot
+python avd-ksu.py susfs --remove                # unload, uninstall
 ```
 
-`susfs` needs `adb` (from the SDK's `platform-tools`) and root for the shell; it loads the module with
-`/data/adb/ksud insmod` from `/data/adb/post-fs-data.d/50-susfs-guard.sh`. `ksud susfs version` /
-`support` show its state; rules are set through the module's interfaces (SUSFS supercalls as used by
-`ksu_susfs`, and procfs files such as `/proc/susfs_path`).
+`susfs` needs `adb` (from the SDK's `platform-tools`) and root for the shell. It installs the release's
+`susfs-module-kernelsu-next-susfs-<version>.zip`, a KernelSU module that holds the SUSFS build of every
+supported AVD kernel and at each boot loads the one whose kernel release matches exactly
+(`ksud insmod`, at post-fs-data, retried at service). The module shows up in the manager's module list,
+where it can be disabled or removed, and its card shows whether the load worked (details in
+`/data/adb/modules/susfs_guard_lkm_avd/load.log`). Installing the zip from the manager works as well; it
+then loads after the next restart. `--legacy` keeps the older way for releases without the zip: copy the
+matching `.ko` to `/data/adb` and load it from `/data/adb/post-fs-data.d/50-susfs-guard.sh` (installing
+the module removes that script).
+
+`ksud susfs version` / `support` show SUSFS's state; rules are set through the module's interfaces
+(SUSFS supercalls as used by `ksu_susfs`, and procfs files such as `/proc/susfs_path`). No `susfs` CLI
+is installed: manager modules that bring their own arm64 `ksu_susfs` binary do not run on x86_64.
 
 Tested on temporary AVDs (root, `susfs` install, autoload after a cold boot, `--remove`, a hidden path
 as seen by an app, `uname` spoofing):
@@ -145,6 +154,7 @@ Each release corresponds to one upstream version and is tagged `<variant>-<versi
 | :--- | :--- |
 | `<target>_<variant>-<version>_kernelsu.ko` | LKM for one AVD kernel |
 | `<target>_kernelsu-next-susfs-<version>_susfs_guard_lkm.ko` | SUSFS guard LKM (`kernelsu-next-susfs` only) |
+| `susfs-module-kernelsu-next-susfs-<version>.zip` | the same LKMs as a KernelSU module that loads the matching one at boot (`kernelsu-next-susfs` only) |
 | `KernelSU_Next_*.apk` | official upstream CI manager build (`kernelsu-next-susfs` only) |
 | `ksud-<variant>-<version>-<triple>[.exe]` | host `ksud` (Windows, Linux, macOS) used for `boot-patch` |
 | `ksuinit-x86_64-<variant>-<version>` | `ksuinit` placed into the ramdisk as `/init` |

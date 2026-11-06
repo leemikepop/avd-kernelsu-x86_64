@@ -80,6 +80,8 @@ jobs:
           V: ${{ needs.check.outputs.version }}
           VARIANT: ${{ inputs.variant }}
           BASE: ${{ needs.check.outputs.base }}
+          REF: ${{ needs.check.outputs.ref }}
+          OWNER: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release
@@ -110,6 +112,11 @@ jobs:
           if [ "$VARIANT" = kernelsu-next-susfs ]; then
             n_s=$(ls release/*_susfs_guard_lkm.ko | wc -l)
             [ "$n_s" = "$n_t" ] || { echo "::error::expected $n_t SUSFS LKMs, got $n_s"; exit 1; }
+            # The same modules as a KernelSU module zip (manager / `ksud module install`).
+            fork_sha=$(gh api "repos/$OWNER/KernelSU-Next/commits/$REF" --jq .sha)
+            python3 scripts/pack_susfs_module.py --ko-dir release --version "$V" \
+              --out "release/susfs-module-${VARIANT}-${V}.zip" \
+              --source "Built from https://github.com/$OWNER/KernelSU-Next/tree/$fork_sha by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$GITHUB_SHA"
             # No KernelSU-Next release has this kernel's uapi: attach the official manager that
             # upstream CI built from the fork's base commit on dev (signed with the upstream key).
             run=$(gh run list -R KernelSU-Next/KernelSU-Next -w "Build Manager CI" -c "$BASE" -s success -L 1 \
@@ -164,7 +171,7 @@ jobs:
               apk=$(cd release && ls *.apk)
               run=$(cat manager-run.txt)
               echo "Install the attached manager \`$apk\`: the official KernelSU-Next CI build ([run $run](https://github.com/KernelSU-Next/KernelSU-Next/actions/runs/$run)) of upstream \`dev\` at [\`${BASE:0:12}\`](https://github.com/KernelSU-Next/KernelSU-Next/commit/$BASE), the commit this branch is based on. KernelSU-Next v3.4.2's manager does not match this kernel module."
-              echo "Then, with the rooted AVD running, install and load SUSFS: \`python avd-ksu.py susfs --version ${V}\` (loads it now and at every boot)."
+              echo "Then, with the rooted AVD running, install SUSFS: \`python avd-ksu.py susfs --version ${V}\` installs the attached module \`susfs-module-${VARIANT}-${V}.zip\` and loads it right away; it then loads at every boot. Installing the zip from the manager's module page works too (it loads after the next restart)."
               echo
               echo "### Known limitations"
               echo
@@ -179,6 +186,7 @@ jobs:
             echo "### Sources and licenses"
             echo
             if [ "$VARIANT" = kernelsu-next-susfs ]; then
+              echo "- \`susfs-module-*.zip\`: the \`*_susfs_guard_lkm.ko\` below (GPL-2.0-only) with the loader scripts of [\`susfs-module/\`]($REPO/tree/$GITHUB_SHA/susfs-module) (Apache-2.0)."
               echo "- \`*_kernelsu.ko\`, \`*_susfs_guard_lkm.ko\` (GPL-2.0-only): \`kernel/\` and \`kernel/susfs/\` of [$UP@${UP_SHA:0:12}](https://github.com/$UP/tree/$UP_SHA) plus the patches listed above, built against the listed \`kernel/common\` commit with the AVD kernel's own config by [$GITHUB_REPOSITORY@${GITHUB_SHA:0:7}]($REPO/tree/$GITHUB_SHA)."
               echo "- \`ksud-*\`, \`ksuinit-x86_64-*\` (GPL-3.0-or-later): built from [$UP@${UP_SHA:0:12}](https://github.com/$UP/tree/$UP_SHA)."
               echo "- \`$(cd release && ls *.apk)\` (GPL-3.0-or-later): unmodified upstream CI build of [KernelSU-Next/KernelSU-Next@${BASE:0:12}](https://github.com/KernelSU-Next/KernelSU-Next/tree/$BASE)."
