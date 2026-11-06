@@ -110,8 +110,9 @@ release**: it is built from the `susfs-x64-avd` branch of
 [leemikepop/KernelSU-Next](https://github.com/leemikepop/KernelSU-Next/tree/susfs-x64-avd), and its
 releases are prereleases tagged `kernelsu-next-susfs-v<describe>`, e.g. `kernelsu-next-susfs-v3.4.2-108-gfe10a39f`.
 Its kernel module needs a newer manager than KernelSU-Next v3.4.2, so each release attaches the official
-KernelSU-Next CI manager build of the upstream commit the branch is based on. Use the `avd-ksu.py`
-attached to that prerelease: the copy in the stable releases does not know this variant yet.
+KernelSU-Next CI manager build of the upstream commit the branch is based on. The `avd-ksu.py`
+attached to any release (stable or preview) knows this variant; with `--variant kernelsu-next-susfs`
+it picks the newest preview prerelease.
 
 ```sh
 python avd-ksu.py patch --avd API36.0-GAPPS --variant kernelsu-next-susfs --out ksun-susfs-API36.0.img
