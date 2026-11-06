@@ -9,7 +9,7 @@ this repository's GitHub Releases, together with host ksud binaries.
   python avd-ksu.py patch  --avd <name> [--variant kernelsu|kernelsu-next|kernelsu-next-susfs] [--version vX.Y.Z]
   python avd-ksu.py restore --avd <name>
   python avd-ksu.py status --avd <name>
-  python avd-ksu.py susfs  [--serial emulator-5554] [--version V] [--remove]   (kernelsu-next-susfs only)
+  python avd-ksu.py susfs  [--serial emulator-5554] [--version V] [--legacy] [--remove]   (kernelsu-next-susfs only)
 
 Standard library only. Python 3.8+.
 """
@@ -31,8 +31,9 @@ from pathlib import Path
 REPO = os.environ.get("AVD_KSU_REPO", "leemikepop/avd-kernelsu-x86_64")
 VARIANTS = ("kernelsu", "kernelsu-next", "kernelsu-next-susfs")
 SUSFS_VARIANT = "kernelsu-next-susfs"   # preview: KernelSU-Next fork + the SUSFS guard LKM
-SUSFS_KO = "/data/adb/susfs_guard_lkm.ko"
-SUSFS_SCRIPT = "/data/adb/post-fs-data.d/50-susfs-guard.sh"
+SUSFS_MODULE_ID = "susfs_guard_lkm_avd"   # the release's susfs-module-*.zip (susfs-module/)
+SUSFS_KO = "/data/adb/susfs_guard_lkm.ko"                    # --legacy install
+SUSFS_SCRIPT = "/data/adb/post-fs-data.d/50-susfs-guard.sh"  # --legacy install
 STOCK_SUFFIX = ".stock"          # our backup of the untouched ramdisk
 STAMP = ".avd-ksu.json"          # written next to ramdisk.img after patching
 CACHE = Path(os.environ.get("AVD_KSU_CACHE", Path.home() / ".cache" / "avd-ksu"))
@@ -355,8 +356,9 @@ def adb_cmd(serial):
 
 
 def cmd_susfs(a):
-    """Install the SUSFS guard LKM on a running, rooted kernelsu-next-susfs AVD: copy it to
-    /data/adb, load it now, and load it at every boot from post-fs-data.d."""
+    """Install the SUSFS guard LKM on a running, rooted kernelsu-next-susfs AVD and load it now.
+    Default: the release's KernelSU module zip (shown in the manager, loads at every boot).
+    --legacy: copy the matching .ko to /data/adb and load it from a post-fs-data.d script."""
     adb = adb_cmd(a.serial)
 
     def run(*args, **kw):
@@ -383,12 +385,44 @@ def cmd_susfs(a):
             f"Patch it with --variant {SUSFS_VARIANT} and install that release's manager, "
             "or pass --force.")
     if a.remove:
-        print(root(f"rm -f {SUSFS_SCRIPT} {SUSFS_KO}\n"
-                   "[ -d /sys/module/susfs_guard_lkm ] && /data/adb/ksud susfs unload\n"
-                   "echo removed\n").strip())
+        print(root(f"""rm -f {SUSFS_SCRIPT} {SUSFS_KO}
+if [ -d /data/adb/modules/{SUSFS_MODULE_ID} ] || [ -d /data/adb/modules_update/{SUSFS_MODULE_ID} ]; then
+  /data/adb/ksud module uninstall {SUSFS_MODULE_ID}
+fi
+[ -d /sys/module/susfs_guard_lkm ] && /data/adb/ksud susfs unload
+echo "removed (the module directory goes away at the next restart)"
+""").strip())
         return
 
-    # Prefer the AVD's kernel-ranchu: a loaded SUSFS may spoof `uname -r`.
+    if not a.legacy:
+        assets = Assets(SUSFS_VARIANT, a.version, a.assets_dir)
+        zname = f"susfs-module-{SUSFS_VARIANT}-{assets.version}.zip"
+        if zname not in assets.files:
+            die(f"{SUSFS_VARIANT} {assets.version} has no {zname} (older release); use --legacy")
+        run("push", str(assets.get(zname)), "/data/local/tmp/susfs-module.zip")
+        staged = f"/data/adb/modules_update/{SUSFS_MODULE_ID}"
+        out = root(f"""/data/adb/ksud module install /data/local/tmp/susfs-module.zip
+rc=$?
+rm -f /data/local/tmp/susfs-module.zip
+[ "$rc" = 0 ] || {{ echo "module install failed: rc=$rc"; exit 1; }}
+# Load the staged copy now instead of waiting for a restart (no-op when SUSFS is already up).
+if [ -d /sys/module/susfs_guard_lkm ]; then
+  echo "SUSFS already loaded: $(/data/adb/ksud susfs version); the module takes over at the next restart"
+else
+  /system/bin/sh {staged}/load.sh now
+  tail -n 3 {staged}/load.log
+  if [ -d /sys/module/susfs_guard_lkm ]; then echo "SUSFS loaded: $(/data/adb/ksud susfs version)"
+  else echo "SUSFS NOT loaded"; fi
+fi
+""")
+        print(out.strip())
+        if "module install failed" in out or "SUSFS NOT loaded" in out:
+            die("SUSFS module install or load failed (see above)")
+        print(f"installed module {SUSFS_MODULE_ID}: it loads at every boot and shows up in the manager's "
+              "module list.\nRemove with: python avd-ksu.py susfs --remove")
+        return
+
+    # --legacy. Prefer the AVD's kernel-ranchu: a loaded SUSFS may spoof `uname -r`.
     rel = kernel_release(resolve_image(a) / "kernel-ranchu") if (a.avd or a.image_dir) \
         else run("shell", "uname -r").strip()
     assets = Assets(SUSFS_VARIANT, a.version, a.assets_dir)
@@ -443,10 +477,13 @@ def main():
             p.add_argument("--ksud", help=argparse.SUPPRESS)
     p = sub.add_parser("susfs", help="install the SUSFS guard LKM on a running kernelsu-next-susfs AVD")
     p.add_argument("--serial", help="adb serial, e.g. emulator-5554 (default: the only device)")
-    p.add_argument("--avd", help="AVD name: match its kernel-ranchu instead of `uname -r`")
+    p.add_argument("--avd", help="--legacy only: match the AVD's kernel-ranchu instead of `uname -r`")
     p.add_argument("--image-dir", help=argparse.SUPPRESS)
     p.add_argument("--version", help="kernelsu-next-susfs release version (default: latest)")
     p.add_argument("--remove", action="store_true", help="unload it and stop loading it at boot")
+    p.add_argument("--legacy", action="store_true",
+                   help="copy the .ko to /data/adb and load it from post-fs-data.d instead of installing "
+                        "the module zip (for releases without the zip)")
     p.add_argument("--force", action="store_true", help="skip the check that the AVD runs kernelsu-next-susfs")
     p.add_argument("--assets-dir", help=argparse.SUPPRESS)
     p.add_argument("--ko", help=argparse.SUPPRESS)
