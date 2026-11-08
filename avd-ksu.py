@@ -6,7 +6,7 @@ for each AVD kernel is built in CI against that kernel's exact source and publis
 this repository's GitHub Releases, together with host ksud binaries.
 
   python avd-ksu.py list
-  python avd-ksu.py patch  --avd <name> [--variant kernelsu|kernelsu-next|kernelsu-next-susfs] [--version vX.Y.Z]
+  python avd-ksu.py patch  --avd <name> [--variant kernelsu|kernelsu-next|kernelsu-next-susfs|finasu] [--version vX.Y.Z]
   python avd-ksu.py restore --avd <name>
   python avd-ksu.py status --avd <name>
   python avd-ksu.py susfs  [--serial emulator-5554] [--version V] [--legacy] [--remove]   (kernelsu-next-susfs only)
@@ -29,7 +29,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = os.environ.get("AVD_KSU_REPO", "leemikepop/avd-kernelsu-x86_64")
-VARIANTS = ("kernelsu", "kernelsu-next", "kernelsu-next-susfs")
+VARIANTS = ("kernelsu", "kernelsu-next", "kernelsu-next-susfs", "finasu")
 SUSFS_VARIANT = "kernelsu-next-susfs"   # preview: KernelSU-Next fork + the SUSFS guard LKM
 SUSFS_MODULE_ID = "susfs_guard_lkm_avd"   # the release's susfs-module-*.zip (susfs-module/)
 SUSFS_KO = "/data/adb/susfs_guard_lkm.ko"                    # --legacy install
@@ -206,6 +206,8 @@ class Assets:
 
 
 def manager_name(variant):
+    if variant == "finasu":
+        return "FinaSU"
     return "KernelSU" if variant == "kernelsu" else "KernelSU Next"
 
 

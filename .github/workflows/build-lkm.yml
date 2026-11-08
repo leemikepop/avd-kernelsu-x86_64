@@ -9,12 +9,13 @@ on:
       variant:
         description: KernelSU project
         type: choice
-        options: [kernelsu, kernelsu-next, kernelsu-next-susfs]
+        options: [kernelsu, kernelsu-next, kernelsu-next-susfs, finasu]
         default: kernelsu
       ref:
-        # No default: KernelSU and KernelSU-Next use different tags (v3.3.1 vs v3.4.2).
-        # kernelsu-next-susfs builds this repository owner's KernelSU-Next fork (e.g. susfs-x64-avd).
-        description: Upstream tag, branch or commit (e.g. v3.3.1 for kernelsu, v3.4.2 for kernelsu-next, susfs-x64-avd for kernelsu-next-susfs)
+        # No default: each project uses its own tags (kernelsu v3.3.1, kernelsu-next v3.4.2,
+        # finasu v1.5.0). kernelsu-next-susfs builds this repository owner's KernelSU-Next fork
+        # (e.g. susfs-x64-avd).
+        description: Upstream tag, branch or commit (e.g. v3.3.1 for kernelsu, v3.4.2 for kernelsu-next, v1.5.0 for finasu, susfs-x64-avd for kernelsu-next-susfs)
         required: true
       target:
         description: Target id from avd-targets.json, or "all"
@@ -56,6 +57,8 @@ jobs:
             kernelsu-next) echo "upstream=KernelSU-Next/KernelSU-Next" >> "$GITHUB_OUTPUT" ;;
             # KernelSU-Next + the x86_64 SUSFS guard LKM, from a fork branch (preview builds).
             kernelsu-next-susfs) echo "upstream=${{ github.repository_owner }}/KernelSU-Next" >> "$GITHUB_OUTPUT" ;;
+            # FinaSU: a KernelSU fork with its own ksud/ksuinit (built from source, like kernelsu-next).
+            finasu) echo "upstream=LyraVoid/FinaSU" >> "$GITHUB_OUTPUT" ;;
             *) echo "unknown variant $VARIANT"; exit 1 ;;
           esac
           m=$(jq -c --arg t "$TARGET" '[.targets[] | select($t == "all" or .id == $t) | {id, kmi}]' .github/avd-targets.json)
@@ -123,10 +126,11 @@ jobs:
           name: host-tools
           path: dist/*
 
-  # KernelSU-Next releases do not ship host ksud / ksuinit-x86_64: build them like upstream CI does
-  # (from the same repository and ref as kernelsu.ko, so also from the fork for kernelsu-next-susfs).
+  # KernelSU-Next and FinaSU do not ship host ksud / ksuinit-x86_64 in releases: build them like
+  # their upstream CI does, from the same repository and ref as kernelsu.ko (so also from the fork
+  # for kernelsu-next-susfs). Every variant except plain kernelsu takes this path.
   ksuinit-kernelsu-next:
-    if: startsWith(inputs.variant || 'kernelsu', 'kernelsu-next')
+    if: (inputs.variant || 'kernelsu') != 'kernelsu'
     needs: setup
     runs-on: ubuntu-latest
     steps:
@@ -157,7 +161,7 @@ jobs:
           path: dist/*
 
   ksud-kernelsu-next:
-    if: startsWith(inputs.variant || 'kernelsu', 'kernelsu-next')
+    if: (inputs.variant || 'kernelsu') != 'kernelsu'
     needs: setup
     strategy:
       fail-fast: false

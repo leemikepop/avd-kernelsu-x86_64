@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Host-side driver (CI and local): resolve a target, then build kernelsu.ko in the DDK container.
-# Usage: scripts/build-target.sh <target-id> <kernelsu|kernelsu-next> <ksu-repo-dir> <ksu-ref> <work-dir>
+# Usage: scripts/build-target.sh <target-id> <kernelsu|kernelsu-next|kernelsu-next-susfs|finasu> <ksu-repo-dir> <ksu-ref> <work-dir>
 # Output: <work-dir>/<target-id>/out-<variant>/kernelsu.ko, plus susfs_guard_lkm.ko for
 #         kernelsu-next-susfs
 set -euo pipefail

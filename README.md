@@ -1,7 +1,8 @@
 # KernelSU LKM for Android Studio AVDs (x86_64)
 
-Root a **stock** Android Studio emulator image with [KernelSU](https://github.com/tiann/KernelSU) or
-[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) in LKM mode. The kernel is never replaced:
+Root a **stock** Android Studio emulator image with [KernelSU](https://github.com/tiann/KernelSU),
+[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) or
+[FinaSU](https://github.com/LyraVoid/FinaSU) in LKM mode. The kernel is never replaced:
 only the system image's `ramdisk.img` is patched to load `kernelsu.ko` at boot.
 
 > Looking for the old approach that rebuilds the whole GKI kernel (`bzImage`), or for arm64 hosts?
@@ -34,7 +35,7 @@ loads fine. KernelSU v3.3.1 works on 16 KB images.
 
 x86_64 `google_apis_playstore` images at their latest SDK revision. Other variants of the same API level
 (`google_apis`, `default`, `*_ps16k`, `-extNN`) may ship a different kernel; `avd-ksu.py list` shows yours
-and `patch` refuses kernels that are not in the table. Minimum upstream versions: **KernelSU v3.3.0**, **KernelSU-Next v3.4.0**.
+and `patch` refuses kernels that are not in the table. Minimum upstream versions: **KernelSU v3.3.0**, **KernelSU-Next v3.4.0**, **FinaSU v1.5.0**.
 
 ## Usage
 
@@ -73,9 +74,10 @@ Suggested naming: one AVD per API level, `API<level>-GAPPS` (e.g. `API33-GAPPS`,
 ```sh
 python avd-ksu.py list                                   # AVDs, kernels, ramdisk state
 
-# KernelSU (latest release) / KernelSU-Next (pinned version)
+# KernelSU (latest release) / KernelSU-Next / FinaSU (pinned versions)
 python avd-ksu.py patch --avd API35-GAPPS --out ksu-API35.img
 python avd-ksu.py patch --avd API35-GAPPS --variant kernelsu-next --version v3.4.2 --out ksun-API35.img
+python avd-ksu.py patch --avd API35-GAPPS --variant finasu --version v1.5.0 --out fina-API35.img
 
 # boot with it (cold boot; a Quick Boot snapshot would restore the old state)
 emulator -avd API35-GAPPS -ramdisk ksu-API35.img -no-snapshot-load
@@ -145,10 +147,41 @@ as seen by an app, `uname` spoofing):
 | A13 (API 33), A14 (API 34) | root and SUSFS load, but only partial hiding: `stat`/`open`/`access`/`statx` return `ENOENT`, while `O_PATH` opens, `mkdir` (`EEXIST`) and directory listings still reveal the path. These kernels have no IBT, and SUSFS's x86_64 syscall hooks need an `endbr64`/`__fentry__` landing pad, so its opath, kstat and create layers stay off |
 | 16 KB images (API 37.1, API 37.2) | no root: the manager's `libksud.so` is only 4 KB aligned, so `/data/adb/ksud` is never installed (the same limitation as KernelSU-Next v3.4.2). The module loads and the AVD boots |
 
+### FinaSU (`finasu`)
+
+[FinaSU](https://github.com/LyraVoid/FinaSU) is a KernelSU fork with kernel-level `su`, an overlayfs
+module system, a built-in Zygisk engine (FolkZygisk), a built-in Shizuku backend (Sui), SUSFS support
+and a configurable manager. Its `kernel/` builds the same `kernelsu.ko` with the same x86_64 syscall
+dispatcher config (`CONFIG_KSU=m CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y`) this repository already
+uses, and its `ksud` / `ksuinit` are built from source like KernelSU-Next's (FinaSU does not publish
+host binaries). So `finasu` is a first-class variant here: per-AVD modules plus host tools, patched
+with `avd-ksu.py` exactly like the others.
+
+```sh
+python avd-ksu.py patch --avd API35-GAPPS --variant finasu --version v1.5.0 --out fina-API35.img
+emulator -avd API35-GAPPS -ramdisk fina-API35.img -no-snapshot-load
+```
+
+Then install the **FinaSU manager APK of the same version** (`v1.5.0`) from FinaSU's
+[releases](https://github.com/LyraVoid/FinaSU/releases), restart the emulator, and grant root from
+the manager as usual.
+
+Notes:
+
+- The release tags its LKMs `finasu-v<version>` and attaches `ksud` / `ksuinit` built from the same
+  FinaSU tag; the manager APK comes from FinaSU's own release, not from this repository.
+- `finasu` starts with **no kernel patches** in `.github/avd-targets.json`: FinaSU carries its own
+  x86_64 hook mechanism, and the KernelSU-specific patches in [`patches/`](patches/) target code paths
+  FinaSU has restructured. CI's `x86_icall_windows.py` check (6.2+ kernels) and a boot-test are what
+  confirm a target; if a kernel needs a fix, port it into `patches/` and add it to the `finasu` list
+  for that target, the same way the other variants do.
+- FinaSU's SUSFS and other hiding features are kernel-capability-gated and share the x86_64
+  syscall-hook limitations described above for the older AVD kernels (A13/A14) and the 16 KB images.
+
 ## Releases
 
 Each release corresponds to one upstream version and is tagged `<variant>-<version>`, e.g.
-`kernelsu-v3.3.1`, `kernelsu-next-v3.4.2`. Assets:
+`kernelsu-v3.3.1`, `kernelsu-next-v3.4.2`, `finasu-v1.5.0`. Assets:
 
 | Asset | Content |
 | :--- | :--- |
@@ -160,8 +193,8 @@ Each release corresponds to one upstream version and is tagged `<variant>-<versi
 | `ksuinit-x86_64-<variant>-<version>` | `ksuinit` placed into the ramdisk as `/init` |
 | `avd-targets.json`, `avd-ksu.py`, `SHA256SUMS` | target list, patch tool, checksums |
 
-KernelSU host tools come from the upstream release; KernelSU-Next does not publish host `ksud`
-or `ksuinit-x86_64`, so they are built here from the same tag.
+KernelSU host tools come from the upstream release; KernelSU-Next and FinaSU do not publish host
+`ksud` or `ksuinit-x86_64`, so they are built here from the same tag.
 
 ## Workflows
 

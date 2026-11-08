@@ -12,10 +12,10 @@ on:
       variant:
         description: KernelSU project
         type: choice
-        options: [kernelsu, kernelsu-next, kernelsu-next-susfs]
+        options: [kernelsu, kernelsu-next, kernelsu-next-susfs, finasu]
         default: kernelsu
       version:
-        description: Upstream release tag (vX.Y.Z); for kernelsu-next-susfs the fork branch or commit (e.g. susfs-x64-avd)
+        description: Upstream release tag (vX.Y.Z, e.g. v1.5.0 for finasu); for kernelsu-next-susfs the fork branch or commit (e.g. susfs-x64-avd)
         required: true
       prerelease:
         type: boolean
@@ -144,6 +144,7 @@ jobs:
             kernelsu) UP=tiann/KernelSU; TOOLS="unmodified binaries from the upstream release [$UP@$V](https://github.com/$UP/releases/tag/$V), source" ;;
             kernelsu-next) UP=KernelSU-Next/KernelSU-Next; TOOLS="built unmodified from" ;;
             kernelsu-next-susfs) UP=$OWNER/KernelSU-Next; TOOLS="built from" ;;
+            finasu) UP=LyraVoid/FinaSU; TOOLS="built unmodified from" ;;
           esac
           UP_SHA=$(gh api "repos/$UP/commits/$REF" --jq .sha)
           REPO="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
