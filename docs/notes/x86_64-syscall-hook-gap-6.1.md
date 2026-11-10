@@ -1,6 +1,7 @@
 # KernelSU x86_64 LKM：A14（6.1.23）的 syscall hook 空窗
 
-> 狀態（2026-11-01）：`< 6.7` 版 patch 已經送上游：https://github.com/tiann/KernelSU/pull/3963
+> 狀態（2026-11-10）：已合併到上游，tiann/KernelSU `02ffbd44`（#3963），KernelSU-Next dev `2d391b91`，都還沒有 release。
+> 本 repo 的 patch 已換成這兩個上游 commit 的 diff，見 [kernelsu-pr-3963.md](kernelsu-pr-3963.md)。下面是送出前的分析，保留作紀錄。
 
 ## 症狀
 
