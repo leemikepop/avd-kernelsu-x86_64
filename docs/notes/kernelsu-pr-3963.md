@@ -1,6 +1,13 @@
 # 上游 PR：tiann/KernelSU#3963
 
-> 2026-11-01 送出，狀態：OPEN。
+> 2026-11-01 送出，2026-11-10 由 aviraxp 以 squash 合併為 `02ffbd44`（#3966 在 2026-11-09 合併為 `dd1a0c0d`）。
+>
+> 合併版本跟我們送出的兩個 commit 相比，多了維護者的修改：init 和 exit 的 `do_syscall_64` 區塊都改成
+> `#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0) && !defined(CONFIG_X86_X32_ABI)`。開了 X32 的 kernel 完全不替換
+> `do_syscall_64`，連 5.16 以下原本的替換也關掉；GKI/AVD 沒開 X32，不受影響。Copilot review 的修正因此不必再推送。
+> init 那行在 PR 裡的 commit `63f55167`，exit 那行是合併時才加的，所以 KernelSU-Next 從 PR head 同步的
+> `2d391b91`（dev，2026-11-10）只有 init 那行。本 repo 的 `x86_64-do_syscall_64-fallback.patch` 和
+> `x86_64-do_syscall_64-fallback-ksun.patch` 分別就是這兩個上游 commit 的 diff，上游新版出來後會自動跳過。
 
 - PR：https://github.com/tiann/KernelSU/pull/3963
 - 標題：`kernel: x86_64: fall back to patching do_syscall_64 when x64_sys_call is missing`

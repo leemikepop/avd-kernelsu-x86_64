@@ -189,14 +189,17 @@ Local build (Docker): `scripts/build-target.sh <target> <kernelsu|kernelsu-next>
 Applied in the order listed in `.github/avd-targets.json`. A patch that upstream has already merged
 applies in reverse and is skipped.
 
-- `x86_64-seccomp-skip.patch` (A13, A14; upstream
-  [tiann/KernelSU#3966](https://github.com/tiann/KernelSU/pull/3966)): the `do_syscall_64`
-  replacement re-read the syscall number even when seccomp had denied the syscall, so the
-  syscall ran anyway. This affects upstream v3.3.0 and v3.3.1 on kernels < 5.16.
-- `x86_64-do_syscall_64-fallback.patch` (A14 only; upstream
-  [tiann/KernelSU#3963](https://github.com/tiann/KernelSU/pull/3963)): the 6.1.23 AVD kernel has
-  neither `x64_sys_call` nor commit fb13b11d, but upstream only falls back to replacing
-  `do_syscall_64` on kernels < 5.16, so the module loads but its syscall hooks never fire. See
+- `x86_64-seccomp-skip.patch` (A13, A14; merged upstream as
+  [tiann/KernelSU#3966](https://github.com/tiann/KernelSU/pull/3966), not in a release yet): the
+  `do_syscall_64` replacement re-read the syscall number even when seccomp had denied the syscall, so
+  the syscall ran anyway. This affects upstream v3.3.0 and v3.3.1 on kernels < 5.16.
+- `x86_64-do_syscall_64-fallback.patch` / `x86_64-do_syscall_64-fallback-ksun.patch` (A14 only;
+  merged upstream as [tiann/KernelSU#3963](https://github.com/tiann/KernelSU/pull/3963), not in a
+  release yet): the 6.1.23 AVD kernel has neither `x64_sys_call` nor commit fb13b11d, but upstream
+  only falls back to replacing `do_syscall_64` on kernels < 5.16, so the module loads but its syscall
+  hooks never fire. The two files are the upstream commits themselves (tiann `02ffbd44`,
+  KernelSU-Next `2d391b91`, which differ in one `CONFIG_X86_X32_ABI` condition), so each is skipped
+  automatically once a release contains it. See
   [docs/notes/x86_64-syscall-hook-gap-6.1.md](docs/notes/x86_64-syscall-hook-gap-6.1.md).
 - `x86_64-kcfi-icall-trampoline.patch` (A15, A16, A17; not upstream yet): on 6.2+ x86_64 kernels
   `module_finalize()` rewrites the four bytes after a `41 ba` / `eb 0c` found 14 bytes in front of
