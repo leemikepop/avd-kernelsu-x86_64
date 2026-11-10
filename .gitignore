@@ -1,5 +1,9 @@
 *.zip
-dist-*
+legacy-gki-build-dists/
 *.code-workspace
 .claude/
 __pycache__/
+playground/
+docs/notes/
+AGENTS.md
+CLAUDE.md
